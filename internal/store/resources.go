@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 
 	"github.com/danieldonoghue/acme-gateway/internal/model"
@@ -8,8 +9,8 @@ import (
 
 // SaveResource inserts a resource mapping. If a mapping for the same upstream_url
 // already exists the existing gateway_id is preserved (idempotent).
-func (s *Store) SaveResource(r *model.ResourceMap) error {
-	_, err := s.db.Exec(
+func (s *Store) SaveResource(ctx context.Context, r *model.ResourceMap) error {
+	_, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO resource_map (gateway_id, resource_type, order_id, upstream_url)
 		 VALUES (?, ?, ?, ?)`,
 		r.GatewayID, r.ResourceType, r.OrderID, r.UpstreamURL,
@@ -19,8 +20,8 @@ func (s *Store) SaveResource(r *model.ResourceMap) error {
 
 // GetResource retrieves a resource mapping by its gateway-local ID.
 // Returns nil, nil if not found.
-func (s *Store) GetResource(gatewayID string) (*model.ResourceMap, error) {
-	row := s.db.QueryRow(
+func (s *Store) GetResource(ctx context.Context, gatewayID string) (*model.ResourceMap, error) {
+	row := s.db.QueryRowContext(ctx,
 		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
 		 FROM resource_map WHERE gateway_id = ?`, gatewayID,
 	)
@@ -29,8 +30,8 @@ func (s *Store) GetResource(gatewayID string) (*model.ResourceMap, error) {
 
 // GetResourceByUpstreamURL retrieves a resource mapping by its upstream URL.
 // Returns nil, nil if not found.
-func (s *Store) GetResourceByUpstreamURL(upstreamURL string) (*model.ResourceMap, error) {
-	row := s.db.QueryRow(
+func (s *Store) GetResourceByUpstreamURL(ctx context.Context, upstreamURL string) (*model.ResourceMap, error) {
+	row := s.db.QueryRowContext(ctx,
 		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
 		 FROM resource_map WHERE upstream_url = ?`, upstreamURL,
 	)
@@ -39,8 +40,8 @@ func (s *Store) GetResourceByUpstreamURL(upstreamURL string) (*model.ResourceMap
 
 // GetResourceByCertFingerprint retrieves a cert resource mapping by the SHA-256 fingerprint
 // of the leaf certificate DER. Returns nil, nil if not found.
-func (s *Store) GetResourceByCertFingerprint(fingerprint string) (*model.ResourceMap, error) {
-	row := s.db.QueryRow(
+func (s *Store) GetResourceByCertFingerprint(ctx context.Context, fingerprint string) (*model.ResourceMap, error) {
+	row := s.db.QueryRowContext(ctx,
 		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
 		 FROM resource_map WHERE cert_fingerprint = ?`, fingerprint,
 	)
@@ -48,8 +49,8 @@ func (s *Store) GetResourceByCertFingerprint(fingerprint string) (*model.Resourc
 }
 
 // GetAuthzResourcesByOrderID returns all authorization resource mappings for an order.
-func (s *Store) GetAuthzResourcesByOrderID(orderID string) ([]*model.ResourceMap, error) {
-	rows, err := s.db.Query(
+func (s *Store) GetAuthzResourcesByOrderID(ctx context.Context, orderID string) ([]*model.ResourceMap, error) {
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
 		 FROM resource_map WHERE order_id = ? AND resource_type = ?`,
 		orderID, model.ResourceTypeAuthz,
@@ -75,8 +76,8 @@ func (s *Store) GetAuthzResourcesByOrderID(orderID string) ([]*model.ResourceMap
 
 // UpdateResourceCertFingerprint stores the SHA-256 hex fingerprint of the leaf certificate
 // against a cert resource entry, enabling revocation routing.
-func (s *Store) UpdateResourceCertFingerprint(gatewayID, fingerprint string) error {
-	_, err := s.db.Exec(
+func (s *Store) UpdateResourceCertFingerprint(ctx context.Context, gatewayID, fingerprint string) error {
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE resource_map SET cert_fingerprint = ? WHERE gateway_id = ?`,
 		fingerprint, gatewayID,
 	)

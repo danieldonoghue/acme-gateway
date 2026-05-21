@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
@@ -73,12 +74,12 @@ func (h *Handler) writeError(w http.ResponseWriter, e *acmeError) {
 	h.attachNonce(w)
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(e.Status)
-	json.NewEncoder(w).Encode(e) //nolint:errcheck
+	json.NewEncoder(w).Encode(e) //nolint:errcheck,gosec
 }
 
 // attachNonce issues a fresh nonce and sets it as the Replay-Nonce response header.
 func (h *Handler) attachNonce(w http.ResponseWriter) {
-	if n, err := h.store.IssueNonce(); err == nil {
+	if n, err := h.store.IssueNonce(context.Background()); err == nil {
 		w.Header().Set("Replay-Nonce", n)
 	}
 }
@@ -138,7 +139,7 @@ func (h *Handler) parseAndValidateJWS(w http.ResponseWriter, r *http.Request) (*
 	}
 
 	// Consume the nonce (single-use).
-	if err := h.store.ConsumeNonce(parsed.Nonce); err != nil {
+	if err := h.store.ConsumeNonce(r.Context(), parsed.Nonce); err != nil {
 		h.writeError(w, errBadNonce(err.Error()))
 		return nil, false
 	}
@@ -148,13 +149,13 @@ func (h *Handler) parseAndValidateJWS(w http.ResponseWriter, r *http.Request) (*
 
 // resolveAccount looks up the account from the KID or embedded JWK.
 // For new-account (embeddedJWK != nil), it returns the existing account if found.
-func (h *Handler) resolveAccount(parsed *ParsedJWS) (*model.Account, *acmeError) {
+func (h *Handler) resolveAccount(ctx context.Context, parsed *ParsedJWS) (*model.Account, *acmeError) {
 	if parsed.EmbeddedJWK != nil {
 		tp, err := JWKThumbprint(parsed.EmbeddedJWK)
 		if err != nil {
 			return nil, errMalformed("invalid JWK: " + err.Error())
 		}
-		acct, err := h.store.GetAccount(tp)
+		acct, err := h.store.GetAccount(ctx, tp)
 		if err != nil {
 			return nil, errServerInternal("looking up account")
 		}
@@ -169,7 +170,7 @@ func (h *Handler) resolveAccount(parsed *ParsedJWS) (*model.Account, *acmeError)
 	}
 	acctID := strings.TrimPrefix(kid, prefix)
 
-	acct, err := h.store.GetAccount(acctID)
+	acct, err := h.store.GetAccount(ctx, acctID)
 	if err != nil {
 		return nil, errServerInternal("looking up account")
 	}
@@ -225,7 +226,7 @@ func (h *Handler) handleNewAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := h.store.GetAccount(tp)
+	existing, err := h.store.GetAccount(r.Context(), tp)
 	if err != nil {
 		h.writeError(w, errServerInternal("looking up account"))
 		return
@@ -273,7 +274,7 @@ func (h *Handler) handleNewAccount(w http.ResponseWriter, r *http.Request) {
 		Status:    model.AccountStatusValid,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := h.store.SaveAccount(acct); err != nil {
+	if err := h.store.SaveAccount(r.Context(), acct); err != nil {
 		h.writeError(w, errServerInternal("saving account"))
 		return
 	}
@@ -317,7 +318,7 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acct, aerr := h.resolveAccount(parsed)
+	acct, aerr := h.resolveAccount(r.Context(), parsed)
 	if aerr != nil {
 		h.writeError(w, aerr)
 		return
@@ -372,9 +373,13 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── Persist order ────────────────────────────────────────────────────────
+	// Persist order
 	orderID := uuid.New().String()
-	idJSON, _ := json.Marshal(req.Identifiers)
+	idJSON, err := json.Marshal(req.Identifiers)
+	if err != nil {
+		h.writeError(w, errServerInternal("marshalling identifiers"))
+		return
+	}
 
 	order := &model.Order{
 		ID:               orderID,
@@ -388,14 +393,14 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
 	}
-	if err := h.store.SaveOrder(order); err != nil {
+	if err := h.store.SaveOrder(r.Context(), order); err != nil {
 		h.writeError(w, errServerInternal("saving order"))
 		return
 	}
 
 	// ── Map upstream URLs → gateway UUIDs ────────────────────────────────────
 	finalizeID := uuid.New().String()
-	if err := h.store.SaveResource(&model.ResourceMap{
+	if err := h.store.SaveResource(r.Context(), &model.ResourceMap{
 		GatewayID:    finalizeID,
 		ResourceType: model.ResourceTypeFinalize,
 		OrderID:      orderID,
@@ -408,7 +413,7 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 	gatewayAuthzURLs := make([]string, len(upOrder.Authorizations))
 	for i, upAuthzURL := range upOrder.Authorizations {
 		authzID := uuid.New().String()
-		if err := h.store.SaveResource(&model.ResourceMap{
+		if err := h.store.SaveResource(r.Context(), &model.ResourceMap{
 			GatewayID:    authzID,
 			ResourceType: model.ResourceTypeAuthz,
 			OrderID:      orderID,
@@ -454,21 +459,24 @@ func (h *Handler) handleOrder(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	acct, aerr := h.resolveAndVerify(w, parsed)
+	acct, aerr := h.resolveAndVerify(r.Context(), w, parsed)
 	if aerr != nil {
 		h.writeError(w, aerr)
 		return
 	}
-	_ = acct
 
 	orderID := chi.URLParam(r, "id")
-	order, err := h.store.GetOrder(orderID)
+	order, err := h.store.GetOrder(r.Context(), orderID)
 	if err != nil || order == nil {
 		h.writeError(w, errNotFound("order not found"))
 		return
 	}
+	if order.AccountID != acct.ID {
+		h.writeError(w, errUnauthorized("order does not belong to this account"))
+		return
+	}
 
-	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
+	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -482,10 +490,10 @@ func (h *Handler) handleOrder(w http.ResponseWriter, r *http.Request) {
 
 	// Update status in the store.
 	if upOrder.Status != order.Status {
-		h.store.UpdateOrderStatus(orderID, upOrder.Status) //nolint:errcheck
+		h.store.UpdateOrderStatus(r.Context(), orderID, upOrder.Status) //nolint:errcheck,gosec
 	}
 
-	resp, aerr := h.buildOrderResponse(orderID, upOrder)
+	resp, aerr := h.buildOrderResponse(r.Context(), orderID, upOrder)
 	if aerr != nil {
 		h.writeError(w, aerr)
 		return
@@ -502,27 +510,30 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	acct, aerr := h.resolveAndVerify(w, parsed)
+	acct, aerr := h.resolveAndVerify(r.Context(), w, parsed)
 	if aerr != nil {
 		h.writeError(w, aerr)
 		return
 	}
-	_ = acct
 
 	authzID := chi.URLParam(r, "id")
-	rm, err := h.store.GetResource(authzID)
+	rm, err := h.store.GetResource(r.Context(), authzID)
 	if err != nil || rm == nil {
 		h.writeError(w, errNotFound("authorization not found"))
 		return
 	}
 
-	order, err := h.store.GetOrder(rm.OrderID)
+	order, err := h.store.GetOrder(r.Context(), rm.OrderID)
 	if err != nil || order == nil {
 		h.writeError(w, errNotFound("order for authorization not found"))
 		return
 	}
+	if order.AccountID != acct.ID {
+		h.writeError(w, errUnauthorized("authorization does not belong to this account"))
+		return
+	}
 
-	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
+	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -537,7 +548,7 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 	// Map challenge URLs to gateway UUIDs and rewrite the response.
 	rewrittenChallenges := make([]interface{}, len(upAuthz.Challenges))
 	for i, chal := range upAuthz.Challenges {
-		rm, err := h.store.GetResourceByUpstreamURL(chal.URL)
+		rm, err := h.store.GetResourceByUpstreamURL(r.Context(), chal.URL)
 		if err != nil {
 			h.writeError(w, errServerInternal("checking challenge resource"))
 			return
@@ -546,7 +557,7 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		if rm != nil {
 			gatewayID = rm.GatewayID
 		} else {
-			if err := h.store.SaveResource(&model.ResourceMap{
+			if err := h.store.SaveResource(r.Context(), &model.ResourceMap{
 				GatewayID:    uuid.New().String(),
 				ResourceType: model.ResourceTypeChallenge,
 				OrderID:      order.ID,
@@ -558,7 +569,7 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 			// Re-read after INSERT OR IGNORE: if two goroutines raced on the same
 			// authz URL, the winner's UUID was persisted; always use the stored
 			// gateway_id so the returned URL resolves correctly.
-			persisted, err := h.store.GetResourceByUpstreamURL(chal.URL)
+			persisted, err := h.store.GetResourceByUpstreamURL(r.Context(), chal.URL)
 			if err != nil || persisted == nil {
 				h.writeError(w, errServerInternal("reading challenge resource"))
 				return
@@ -596,27 +607,30 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	acct, aerr := h.resolveAndVerify(w, parsed)
+	acct, aerr := h.resolveAndVerify(r.Context(), w, parsed)
 	if aerr != nil {
 		h.writeError(w, aerr)
 		return
 	}
-	_ = acct
 
 	chalID := chi.URLParam(r, "id")
-	rm, err := h.store.GetResource(chalID)
+	rm, err := h.store.GetResource(r.Context(), chalID)
 	if err != nil || rm == nil {
 		h.writeError(w, errNotFound("challenge not found"))
 		return
 	}
 
-	order, err := h.store.GetOrder(rm.OrderID)
+	order, err := h.store.GetOrder(r.Context(), rm.OrderID)
 	if err != nil || order == nil {
 		h.writeError(w, errNotFound("order for challenge not found"))
 		return
 	}
+	if order.AccountID != acct.ID {
+		h.writeError(w, errUnauthorized("challenge does not belong to this account"))
+		return
+	}
 
-	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
+	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -650,23 +664,26 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	acct, aerr := h.resolveAndVerify(w, parsed)
+	acct, aerr := h.resolveAndVerify(r.Context(), w, parsed)
 	if aerr != nil {
 		h.writeError(w, aerr)
 		return
 	}
-	_ = acct
 
 	finalizeID := chi.URLParam(r, "id")
-	rm, err := h.store.GetResource(finalizeID)
+	rm, err := h.store.GetResource(r.Context(), finalizeID)
 	if err != nil || rm == nil {
 		h.writeError(w, errNotFound("finalize resource not found"))
 		return
 	}
 
-	order, err := h.store.GetOrder(rm.OrderID)
+	order, err := h.store.GetOrder(r.Context(), rm.OrderID)
 	if err != nil || order == nil {
 		h.writeError(w, errNotFound("order not found"))
+		return
+	}
+	if order.AccountID != acct.ID {
+		h.writeError(w, errUnauthorized("order does not belong to this account"))
 		return
 	}
 
@@ -686,7 +703,7 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
+	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -698,9 +715,9 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.store.UpdateOrderStatus(order.ID, upOrder.Status) //nolint:errcheck
+	h.store.UpdateOrderStatus(r.Context(), order.ID, upOrder.Status) //nolint:errcheck,gosec
 
-	resp, aerr := h.buildOrderResponse(order.ID, upOrder)
+	resp, aerr := h.buildOrderResponse(r.Context(), order.ID, upOrder)
 	if aerr != nil {
 		h.writeError(w, aerr)
 		return
@@ -710,21 +727,41 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 
 // ─── GET /cert/{id} ───────────────────────────────────────────────────────────
 
+// handleCert serves GET /cert/{id} and POST /cert/{id} (POST-as-GET per RFC 8555 §7.4.2).
+// Both forms return the PEM certificate chain. For POST requests the JWS body is validated
+// but the payload is expected to be empty (null), as required by POST-as-GET.
 func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
+	// POST-as-GET: validate the JWS and consume the nonce, then proceed as GET.
+	if r.Method == http.MethodPost {
+		h.addCommonHeaders(w)
+		parsed, ok := h.parseAndValidateJWS(w, r)
+		if !ok {
+			return
+		}
+		if len(parsed.Payload) != 0 {
+			h.writeError(w, errMalformed("POST-as-GET payload must be empty"))
+			return
+		}
+		if _, aerr := h.resolveAndVerify(r.Context(), w, parsed); aerr != nil {
+			h.writeError(w, aerr)
+			return
+		}
+	}
+
 	certID := chi.URLParam(r, "id")
-	rm, err := h.store.GetResource(certID)
+	rm, err := h.store.GetResource(r.Context(), certID)
 	if err != nil || rm == nil {
 		h.writeError(w, errNotFound("certificate not found"))
 		return
 	}
 
-	order, err := h.store.GetOrder(rm.OrderID)
+	order, err := h.store.GetOrder(r.Context(), rm.OrderID)
 	if err != nil || order == nil {
 		h.writeError(w, errNotFound("order not found"))
 		return
 	}
 
-	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
+	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -739,7 +776,7 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 	// Cache the leaf-cert fingerprint so revocation can be routed to the correct upstream.
 	if rm.CertFingerprint == "" {
 		if fp, ok := leafCertFingerprint(chain); ok {
-			if err := h.store.UpdateResourceCertFingerprint(certID, fp); err != nil {
+			if err := h.store.UpdateResourceCertFingerprint(r.Context(), certID, fp); err != nil {
 				h.log.Warn("cert fingerprint cache: failed to write", "certID", certID, "err", err)
 			}
 		}
@@ -747,7 +784,7 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	w.Write(chain) // #nosec G705 -- PEM cert chain from trusted upstream; response Content-Type is application/pem-certificate-chain, not text/html
+	w.Write(chain) /* #nosec G705 */ //nolint:errcheck,gosec
 }
 
 // ─── POST /revoke-cert ────────────────────────────────────────────────────────
@@ -773,13 +810,12 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		var aerr *acmeError
-		acct, aerr = h.resolveAndVerify(w, parsed)
+		acct, aerr = h.resolveAndVerify(r.Context(), w, parsed)
 		if aerr != nil {
 			h.writeError(w, aerr)
 			return
 		}
 	}
-	_ = acct
 
 	var req revokeCertRequest
 	if err := json.Unmarshal(parsed.Payload, &req); err != nil {
@@ -818,18 +854,30 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	upstreamID := h.cfg.Routing.DefaultUpstream
 	upstreamSlot := 0
 	fp := hex.EncodeToString(sha256sum(certDER))
-	if certRM, err := h.store.GetResourceByCertFingerprint(fp); err == nil && certRM != nil {
-		if certOrder, err := h.store.GetOrder(certRM.OrderID); err == nil && certOrder != nil {
+	if certRM, err := h.store.GetResourceByCertFingerprint(r.Context(), fp); err == nil && certRM != nil {
+		if certOrder, err := h.store.GetOrder(r.Context(), certRM.OrderID); err == nil && certOrder != nil {
 			upstreamID = certOrder.UpstreamID
 			upstreamSlot = certOrder.UpstreamSlot
+			// For KID-based revocation, verify the requesting account owns this cert.
+			if acct != nil && certOrder.AccountID != acct.ID {
+				h.writeError(w, errUnauthorized("certificate does not belong to this account"))
+				return
+			}
 		}
+	} else if acct != nil {
+		// Fingerprint not in store (cert was never fetched via /cert/{id}).
+		// Local ownership cannot be enforced; the upstream CA is the safety net.
+		h.log.Warn("revoke: cert fingerprint not cached, ownership check skipped",
+			"account_id", acct.ID,
+			"upstream_id", upstreamID,
+		)
 	}
 	reason := -1
 	if req.Reason != nil {
 		reason = *req.Reason
 	}
 
-	client, err := h.pool.GetSlot(upstreamID, upstreamSlot)
+	client, err := h.pool.GetSlot(r.Context(), upstreamID, upstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -843,11 +891,24 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// ─── POST /key-change ────────────────────────────────────────────────────────
+
+// handleKeyChange satisfies the RFC 8555 §7.1.1 requirement that keyChange be
+// advertised in the directory. Key roll-over is not implemented in this version.
+func (h *Handler) handleKeyChange(w http.ResponseWriter, r *http.Request) {
+	h.addCommonHeaders(w)
+	h.writeError(w, &acmeError{
+		Type:   "urn:ietf:params:acme:error:serverInternal",
+		Detail: "key roll-over is not supported by this gateway",
+		Status: http.StatusInternalServerError,
+	})
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 // resolveAndVerify resolves the account from a KID JWS and verifies the signature.
-func (h *Handler) resolveAndVerify(w http.ResponseWriter, parsed *ParsedJWS) (*model.Account, *acmeError) {
-	acct, aerr := h.resolveAccount(parsed)
+func (h *Handler) resolveAndVerify(ctx context.Context, w http.ResponseWriter, parsed *ParsedJWS) (*model.Account, *acmeError) {
+	acct, aerr := h.resolveAccount(ctx, parsed)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -880,14 +941,14 @@ func (h *Handler) mustParsePublicKey(jwkJSON string) interface{} {
 
 // buildOrderResponse constructs a gateway-local order response from an upstream order.
 // It maps cert URLs if the order is valid.
-func (h *Handler) buildOrderResponse(orderID string, upOrder *upstream.ACMEOrder) (*orderResponse, *acmeError) {
+func (h *Handler) buildOrderResponse(ctx context.Context, orderID string, upOrder *upstream.ACMEOrder) (*orderResponse, *acmeError) {
 	// Retrieve the finalize and cert mappings for this order.
-	order, err := h.store.GetOrder(orderID)
+	order, err := h.store.GetOrder(ctx, orderID)
 	if err != nil || order == nil {
 		return nil, errNotFound("order not found")
 	}
 
-	finalizeRM, err := h.store.GetResourceByUpstreamURL(upOrder.Finalize)
+	finalizeRM, err := h.store.GetResourceByUpstreamURL(ctx, upOrder.Finalize)
 	if err != nil {
 		return nil, errServerInternal("looking up finalize resource")
 	}
@@ -899,17 +960,17 @@ func (h *Handler) buildOrderResponse(orderID string, upOrder *upstream.ACMEOrder
 
 	var certURL string
 	if upOrder.Certificate != "" {
-		rm, _ := h.store.GetResourceByUpstreamURL(upOrder.Certificate)
+		rm, _ := h.store.GetResourceByUpstreamURL(ctx, upOrder.Certificate) //nolint:errcheck
 		if rm == nil {
 			// INSERT OR IGNORE: if two goroutines race on the same order poll,
 			// only one UUID wins; re-read to always use the persisted gateway_id.
-			h.store.SaveResource(&model.ResourceMap{ //nolint:errcheck
+			h.store.SaveResource(ctx, &model.ResourceMap{ //nolint:errcheck,gosec
 				GatewayID:    uuid.New().String(),
 				ResourceType: model.ResourceTypeCert,
 				OrderID:      orderID,
 				UpstreamURL:  upOrder.Certificate,
 			})
-			rm, _ = h.store.GetResourceByUpstreamURL(upOrder.Certificate)
+			rm, _ = h.store.GetResourceByUpstreamURL(ctx, upOrder.Certificate) //nolint:errcheck
 		}
 		if rm != nil {
 			certURL = h.cfg.Server.BaseURL + "/cert/" + rm.GatewayID
@@ -917,7 +978,7 @@ func (h *Handler) buildOrderResponse(orderID string, upOrder *upstream.ACMEOrder
 	}
 
 	var idList []model.Identifier
-	json.Unmarshal([]byte(order.Identifiers), &idList) //nolint:errcheck
+	json.Unmarshal([]byte(order.Identifiers), &idList) //nolint:errcheck,gosec
 
 	resp := &orderResponse{
 		Status:      upOrder.Status,
@@ -928,7 +989,7 @@ func (h *Handler) buildOrderResponse(orderID string, upOrder *upstream.ACMEOrder
 	}
 
 	// Populate authorizations per RFC 8555 §7.1.3.
-	authzRMs, err := h.store.GetAuthzResourcesByOrderID(orderID)
+	authzRMs, err := h.store.GetAuthzResourcesByOrderID(ctx, orderID)
 	if err == nil {
 		for _, arm := range authzRMs {
 			resp.Authorizations = append(resp.Authorizations, h.cfg.Server.BaseURL+"/authz/"+arm.GatewayID)

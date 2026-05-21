@@ -196,17 +196,17 @@ func (m *Manager) acquire(ctx context.Context) error {
 
 		// Notify upstream the challenge is ready.
 		if _, err := client.TriggerChallenge(ctx, dns01Chal.URL); err != nil {
-			hook.Cleanup(ctx, authz.Identifier.Value, validation, dns01Chal.Token) //nolint:errcheck
+			hook.Cleanup(ctx, authz.Identifier.Value, validation, dns01Chal.Token) //nolint:errcheck,gosec
 			return fmt.Errorf("triggering challenge: %w", err)
 		}
 
 		// Poll for the authorization to become valid (up to 5 minutes).
 		if err := pollAuthorization(ctx, client, authzURL); err != nil {
-			hook.Cleanup(ctx, authz.Identifier.Value, validation, dns01Chal.Token) //nolint:errcheck
+			hook.Cleanup(ctx, authz.Identifier.Value, validation, dns01Chal.Token) //nolint:errcheck,gosec
 			return err
 		}
 
-		hook.Cleanup(ctx, authz.Identifier.Value, validation, dns01Chal.Token) //nolint:errcheck
+		hook.Cleanup(ctx, authz.Identifier.Value, validation, dns01Chal.Token) //nolint:errcheck,gosec
 	}
 
 	// Build the CSR.
@@ -305,29 +305,26 @@ func buildCSR(key *ecdsa.PrivateKey, domain string) ([]byte, error) {
 
 // atomicWrite writes data to path atomically using a temp file + rename.
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	dir := "."
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			dir = path[:i]
-			break
-		}
-	}
+	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".tmp-")
 	if err != nil {
 		return err
 	}
 	tmpPath := f.Name()
 	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+		f.Close()          //nolint:errcheck,gosec
+		os.Remove(tmpPath) //nolint:errcheck,gosec
 		return err
 	}
 	if err := f.Chmod(mode); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+		f.Close()          //nolint:errcheck,gosec
+		os.Remove(tmpPath) //nolint:errcheck,gosec
 		return err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath) //nolint:errcheck,gosec
+		return err
+	}
 	return os.Rename(tmpPath, path)
 }
 

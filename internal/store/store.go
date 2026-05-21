@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -26,13 +27,13 @@ func New(path string) (*Store, error) {
 	// writers a retry budget instead of failing immediately with SQLITE_BUSY.
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
+	if _, err := db.ExecContext(context.Background(), `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
 		return nil, fmt.Errorf("setting pragmas: %w", err)
 	}
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 	return s, nil
@@ -44,8 +45,8 @@ func (s *Store) Close() error {
 }
 
 // PruneExpiredNonces removes nonces that have passed their expiry time.
-func (s *Store) PruneExpiredNonces() error {
-	_, err := s.db.Exec(`DELETE FROM nonces WHERE expires_at <= ?`, time.Now().UTC())
+func (s *Store) PruneExpiredNonces(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM nonces WHERE expires_at <= ?`, time.Now().UTC())
 	return err
 }
 
@@ -100,27 +101,27 @@ CREATE TABLE IF NOT EXISTS nonces (
 `
 
 func (s *Store) migrate() error {
-	if _, err := s.db.Exec(schema); err != nil {
+	if _, err := s.db.ExecContext(context.Background(), schema); err != nil {
 		return err
 	}
 	// Idempotent column additions for databases predating this schema version.
-	s.db.Exec(`ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`)              //nolint:errcheck
-	s.db.Exec(`ALTER TABLE orders ADD COLUMN upstream_slot INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+	s.db.ExecContext(context.Background(), `ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`)              //nolint:errcheck,gosec
+	s.db.ExecContext(context.Background(), `ALTER TABLE orders ADD COLUMN upstream_slot INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck,gosec
 	// Migrate upstream_accounts from single-PK to composite (upstream_id, slot) PK.
 	// Detect the old schema by checking whether the slot column exists.
 	var slotExists int
-	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstream_accounts') WHERE name='slot'`).Scan(&slotExists) //nolint:errcheck
+	s.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM pragma_table_info('upstream_accounts') WHERE name='slot'`).Scan(&slotExists) //nolint:errcheck,gosec
 	if slotExists == 0 {
 		// Wrap in a transaction so a crash mid-swap doesn't orphan data.
-		tx, err := s.db.Begin()
+		tx, err := s.db.BeginTx(context.Background(), nil)
 		if err != nil {
 			return fmt.Errorf("beginning upstream_accounts migration: %w", err)
 		}
-		if _, err := tx.Exec(`ALTER TABLE upstream_accounts RENAME TO upstream_accounts_v1`); err != nil {
-			tx.Rollback() //nolint:errcheck
+		if _, err := tx.ExecContext(context.Background(), `ALTER TABLE upstream_accounts RENAME TO upstream_accounts_v1`); err != nil {
+			tx.Rollback() //nolint:errcheck,gosec
 			return fmt.Errorf("renaming upstream_accounts: %w", err)
 		}
-		if _, err := tx.Exec(`CREATE TABLE upstream_accounts (
+		if _, err := tx.ExecContext(context.Background(), `CREATE TABLE upstream_accounts (
   upstream_id TEXT    NOT NULL,
   slot        INTEGER NOT NULL DEFAULT 0,
   account_url TEXT    NOT NULL,
@@ -128,15 +129,15 @@ func (s *Store) migrate() error {
   created_at  TEXT    NOT NULL,
   PRIMARY KEY (upstream_id, slot)
 )`); err != nil {
-			tx.Rollback() //nolint:errcheck
+			tx.Rollback() //nolint:errcheck,gosec
 			return fmt.Errorf("creating upstream_accounts: %w", err)
 		}
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstream_accounts SELECT upstream_id,0,account_url,private_key,created_at FROM upstream_accounts_v1`); err != nil {
-			tx.Rollback() //nolint:errcheck
+		if _, err := tx.ExecContext(context.Background(), `INSERT OR IGNORE INTO upstream_accounts SELECT upstream_id,0,account_url,private_key,created_at FROM upstream_accounts_v1`); err != nil {
+			tx.Rollback() //nolint:errcheck,gosec
 			return fmt.Errorf("copying upstream_accounts data: %w", err)
 		}
-		if _, err := tx.Exec(`DROP TABLE upstream_accounts_v1`); err != nil {
-			tx.Rollback() //nolint:errcheck
+		if _, err := tx.ExecContext(context.Background(), `DROP TABLE upstream_accounts_v1`); err != nil {
+			tx.Rollback() //nolint:errcheck,gosec
 			return fmt.Errorf("dropping upstream_accounts_v1: %w", err)
 		}
 		if err := tx.Commit(); err != nil {

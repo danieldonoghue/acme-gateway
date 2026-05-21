@@ -59,7 +59,7 @@ func run(cfgPath string, log *slog.Logger) error {
 	log.Info("state store opened", "path", cfg.State.DBPath)
 
 	// Prune expired nonces from previous runs.
-	if err := st.PruneExpiredNonces(); err != nil {
+	if err := st.PruneExpiredNonces(context.Background()); err != nil {
 		log.Warn("pruning nonces", "err", err)
 	}
 
@@ -121,7 +121,7 @@ func run(cfgPath string, log *slog.Logger) error {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := st.PruneExpiredNonces(); err != nil {
+			if err := st.PruneExpiredNonces(context.Background()); err != nil {
 				log.Warn("pruning nonces", "err", err)
 			}
 		}

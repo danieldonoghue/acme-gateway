@@ -102,8 +102,12 @@ func (s *Server) buildRouter() http.Handler {
 	r.Post("/challenge/{id}", h.handleChallenge)
 	r.Post("/finalize/{id}", h.handleFinalize)
 
-	// Certificate
+	// Certificate: GET for legacy clients; POST-as-GET (RFC 8555 §7.4.2) for compliant ones.
 	r.Get("/cert/{id}", h.handleCert)
+	r.Post("/cert/{id}", h.handleCert)
+
+	// Key roll-over (RFC 8555 §7.1.1 required; not implemented, returns 501)
+	r.Post("/key-change", h.handleKeyChange)
 
 	// Revocation
 	r.Post("/revoke-cert", h.handleRevokeCert)

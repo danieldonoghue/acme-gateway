@@ -89,7 +89,7 @@ func ParseJWS(body []byte) (*ParsedJWS, error) {
 		return nil, errors.New("missing nonce in JWS protected header")
 	}
 	// "url" is not a standard JOSE header; it lives in ExtraHeaders.
-	url, _ := headers.ExtraHeaders[jose.HeaderKey("url")].(string)
+	url, _ := headers.ExtraHeaders[jose.HeaderKey("url")].(string) //nolint:errcheck
 	if url == "" {
 		return nil, errors.New("missing url in JWS protected header")
 	}

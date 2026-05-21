@@ -61,7 +61,7 @@ func (p *Pool) slotRegLock(upstreamID string, slot int) *sync.Mutex {
 // new order so the slot is known and can be stored with the order.
 func (p *Pool) NextClient(ctx context.Context, upstreamID string) (*Client, int, error) {
 	p.mu.Lock()
-	clients, err := p.getOrCreateAll(upstreamID)
+	clients, err := p.getOrCreateAll(ctx, upstreamID)
 	if err != nil {
 		p.mu.Unlock()
 		return nil, 0, err
@@ -83,9 +83,9 @@ func (p *Pool) NextClient(ctx context.Context, upstreamID string) (*Client, int,
 // the slot was recorded when the order was created.
 // If slot is out of range (e.g. a legacy order that predates multi-account
 // support) it is clamped to 0.
-func (p *Pool) GetSlot(upstreamID string, slot int) (*Client, error) {
+func (p *Pool) GetSlot(ctx context.Context, upstreamID string, slot int) (*Client, error) {
 	p.mu.Lock()
-	clients, err := p.getOrCreateAll(upstreamID)
+	clients, err := p.getOrCreateAll(ctx, upstreamID)
 	if err != nil {
 		p.mu.Unlock()
 		return nil, err
@@ -101,8 +101,8 @@ func (p *Pool) GetSlot(upstreamID string, slot int) (*Client, error) {
 // Get returns the slot-0 client for upstreamID. It exists for code paths that
 // do not have a stored slot (e.g. the revocation fallback when the certificate
 // issuer is unknown).
-func (p *Pool) Get(upstreamID string) (*Client, error) {
-	return p.GetSlot(upstreamID, 0)
+func (p *Pool) Get(ctx context.Context, upstreamID string) (*Client, error) {
+	return p.GetSlot(ctx, upstreamID, 0)
 }
 
 // ensureSlotRegistered registers the client's ACME account if it has not yet
@@ -139,7 +139,7 @@ func (p *Pool) ensureSlotRegistered(ctx context.Context, upstreamID string, slot
 		PrivateKey: string(keyPEM),
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := p.store.SaveUpstreamAccount(ua); err != nil {
+	if err := p.store.SaveUpstreamAccount(ctx, ua); err != nil {
 		return fmt.Errorf("persisting upstream account %q slot %d: %w", upstreamID, slot, err)
 	}
 	return nil
@@ -147,7 +147,7 @@ func (p *Pool) ensureSlotRegistered(ctx context.Context, upstreamID string, slot
 
 // getOrCreateAll is the internal (caller must hold p.mu) function that returns
 // the full slice of Clients for an upstream, creating them if needed.
-func (p *Pool) getOrCreateAll(upstreamID string) ([]*Client, error) {
+func (p *Pool) getOrCreateAll(ctx context.Context, upstreamID string) ([]*Client, error) {
 	if cs, ok := p.clients[upstreamID]; ok {
 		return cs, nil
 	}
@@ -164,7 +164,7 @@ func (p *Pool) getOrCreateAll(upstreamID string) ([]*Client, error) {
 
 	clients := make([]*Client, count)
 	for slot := 0; slot < count; slot++ {
-		ua, err := p.store.GetUpstreamAccountBySlot(upstreamID, slot)
+		ua, err := p.store.GetUpstreamAccountBySlot(ctx, upstreamID, slot)
 		if err != nil {
 			return nil, fmt.Errorf("loading upstream account %q slot %d: %w", upstreamID, slot, err)
 		}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -9,8 +10,8 @@ import (
 )
 
 // SaveOrder inserts or replaces an order record.
-func (s *Store) SaveOrder(o *model.Order) error {
-	_, err := s.db.Exec(
+func (s *Store) SaveOrder(ctx context.Context, o *model.Order) error {
+	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO orders
 		 (id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -23,8 +24,8 @@ func (s *Store) SaveOrder(o *model.Order) error {
 }
 
 // GetOrder retrieves an order by its gateway ID. Returns nil, nil if not found.
-func (s *Store) GetOrder(id string) (*model.Order, error) {
-	row := s.db.QueryRow(
+func (s *Store) GetOrder(ctx context.Context, id string) (*model.Order, error) {
+	row := s.db.QueryRowContext(ctx,
 		`SELECT id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, created_at, updated_at
 		 FROM orders WHERE id = ?`, id,
 	)
@@ -32,15 +33,18 @@ func (s *Store) GetOrder(id string) (*model.Order, error) {
 }
 
 // UpdateOrderStatus updates the status and updated_at timestamp for an order.
-func (s *Store) UpdateOrderStatus(id, status string) error {
-	result, err := s.db.Exec(
+func (s *Store) UpdateOrderStatus(ctx context.Context, id, status string) error {
+	result, err := s.db.ExecContext(ctx,
 		`UPDATE orders SET status = ?, updated_at = ? WHERE id = ?`,
 		status, time.Now().UTC().Format(time.RFC3339), id,
 	)
 	if err != nil {
 		return err
 	}
-	rows, _ := result.RowsAffected()
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if rows == 0 {
 		return fmt.Errorf("order %q not found", id)
 	}
@@ -59,7 +63,7 @@ func scanOrder(row *sql.Row) (*model.Order, error) {
 		}
 		return nil, err
 	}
-	o.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	o.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	o.CreatedAt, _ = time.Parse(time.RFC3339, createdAt) //nolint:errcheck
+	o.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt) //nolint:errcheck
 	return &o, nil
 }

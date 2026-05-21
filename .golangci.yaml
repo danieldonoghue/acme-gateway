@@ -36,6 +36,7 @@ linters:
       enable-all: true
       disable:
         - fieldalignment  # not enforcing struct layout optimisation
+        - shadow          # idiomatic Go uses err re-declaration in if-init statements
 
     revive:
       rules:
@@ -62,6 +63,10 @@ linters:
       # Allow unkeyed struct literals in test helpers.
       - path: "_test\\.go$"
         text: "composite literal uses unkeyed fields"
+      # defer .Close() error is universally ignored in Go; it is almost never
+      # actionable and suppressing the noise keeps the signal clean.
+      - linters: [errcheck]
+        text: "Error return value of `.*\\.Close` is not checked"
 
 issues:
   max-issues-per-linter: 0

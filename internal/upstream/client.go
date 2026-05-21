@@ -166,11 +166,23 @@ func (c *Client) Directory(ctx context.Context) (*ACMEDirectory, error) {
 	}
 	c.mu.Unlock()
 
-	resp, err := c.httpClient.Get(c.directoryURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.directoryURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building directory request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching directory: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body) //nolint:errcheck
+		if len(body) > 256 {
+			body = body[:256]
+		}
+		return nil, fmt.Errorf("upstream directory HTTP %d: %s", resp.StatusCode, body)
+	}
 
 	var dir ACMEDirectory
 	if err := json.NewDecoder(resp.Body).Decode(&dir); err != nil {
@@ -210,7 +222,7 @@ func (c *Client) getNonce(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetching nonce: %w", err)
 	}
-	resp.Body.Close()
+	resp.Body.Close() //nolint:errcheck,gosec
 
 	n := resp.Header.Get("Replay-Nonce")
 	if n == "" {
@@ -307,7 +319,7 @@ func (c *Client) buildJWS(nonce, url string, payload interface{}) ([]byte, error
 
 // parseACMEError reads an ACME problem document from a non-2xx response body.
 func parseACMEError(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body) //nolint:errcheck
 	var ae ACMEError
 	if err := json.Unmarshal(body, &ae); err != nil {
 		return fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, string(body))

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -13,7 +14,7 @@ import (
 const nonceTTL = 10 * time.Minute
 
 // IssueNonce generates a cryptographically random nonce, persists it, and returns it.
-func (s *Store) IssueNonce() (string, error) {
+func (s *Store) IssueNonce(ctx context.Context) (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generating nonce: %w", err)
@@ -21,7 +22,7 @@ func (s *Store) IssueNonce() (string, error) {
 	value := base64.RawURLEncoding.EncodeToString(b)
 	expiresAt := time.Now().Add(nonceTTL).UTC()
 
-	if _, err := s.db.Exec(
+	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO nonces (nonce, expires_at) VALUES (?, ?)`,
 		value, expiresAt.Format(time.RFC3339),
 	); err != nil {
@@ -32,8 +33,8 @@ func (s *Store) IssueNonce() (string, error) {
 
 // ConsumeNonce validates and atomically deletes a nonce.
 // Returns an error if the nonce is unknown or expired.
-func (s *Store) ConsumeNonce(value string) error {
-	tx, err := s.db.Begin()
+func (s *Store) ConsumeNonce(ctx context.Context, value string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -41,7 +42,7 @@ func (s *Store) ConsumeNonce(value string) error {
 
 	var n model.Nonce
 	var expiresAt string
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(ctx,
 		`SELECT nonce, expires_at FROM nonces WHERE nonce = ?`, value,
 	).Scan(&n.Value, &expiresAt)
 	if err == sql.ErrNoRows {
@@ -57,12 +58,12 @@ func (s *Store) ConsumeNonce(value string) error {
 	}
 	if time.Now().After(t) {
 		// Delete the expired nonce and report it as invalid.
-		tx.Exec(`DELETE FROM nonces WHERE nonce = ?`, value) //nolint:errcheck
-		tx.Commit()                                          //nolint:errcheck
+		tx.ExecContext(ctx, `DELETE FROM nonces WHERE nonce = ?`, value) //nolint:errcheck,gosec
+		tx.Commit()                                                      //nolint:errcheck,gosec
 		return fmt.Errorf("nonce expired")
 	}
 
-	if _, err := tx.Exec(`DELETE FROM nonces WHERE nonce = ?`, value); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM nonces WHERE nonce = ?`, value); err != nil {
 		return err
 	}
 	return tx.Commit()

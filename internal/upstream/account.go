@@ -5,17 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/go-jose/go-jose/v4"
 
 	"github.com/danieldonoghue/acme-gateway/internal/config"
 )
-
-// EABPayload is the payload for an External Account Binding JWS.
-// It embeds the account's public JWK as the payload (RFC 8555 §7.3.4).
-type eabPayload = json.RawMessage
 
 // Register creates or retrieves the gateway's account at the upstream CA.
 // If the account already exists (determined by the directory's newAccount endpoint
@@ -105,40 +100,4 @@ func (c *Client) buildEAB(newAccountURL string, eabCfg *config.EABConfig) (json.
 	}
 
 	return json.RawMessage(jws.FullSerialize()), nil
-}
-
-// FetchAccountURL queries the upstream CA for the account URL associated with
-// the current keypair. Useful when restoring from a persisted key.
-func (c *Client) FetchAccountURL(ctx context.Context, contactEmail string) (string, error) {
-	dir, err := c.Directory(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	payload := map[string]interface{}{
-		"onlyReturnExisting": true,
-	}
-
-	resp, err := c.signedPost(ctx, dir.NewAccount, payload)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		var ae ACMEError
-		if err := json.Unmarshal(body, &ae); err == nil {
-			ae.Status = resp.StatusCode
-			return "", &ae
-		}
-		return "", fmt.Errorf("upstream HTTP %d", resp.StatusCode)
-	}
-
-	accountURL := resp.Header.Get("Location")
-	if accountURL == "" {
-		return "", fmt.Errorf("upstream returned no account Location")
-	}
-	c.SetAccountURL(accountURL)
-	return accountURL, nil
 }

@@ -3,18 +3,17 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-
-	"github.com/danieldonoghue/acme-gateway/internal/config"
 )
 
 // directoryResponse is the ACMEv2 directory object (RFC 8555 §7.1.1) including
 // the profiles extension (draft-ietf-acme-profiles).
 type directoryResponse struct {
-	NewNonce   string          `json:"newNonce"`
-	NewAccount string          `json:"newAccount"`
-	NewOrder   string          `json:"newOrder"`
-	RevokeCert string          `json:"revokeCert"`
-	Meta       directoryMeta   `json:"meta"`
+	NewNonce   string        `json:"newNonce"`
+	NewAccount string        `json:"newAccount"`
+	NewOrder   string        `json:"newOrder"`
+	RevokeCert string        `json:"revokeCert"`
+	KeyChange  string        `json:"keyChange"`
+	Meta       directoryMeta `json:"meta"`
 }
 
 type directoryMeta struct {
@@ -32,6 +31,7 @@ func buildDirectory(baseURL string, profiles map[string]string) *directoryRespon
 		NewAccount: baseURL + "/new-account",
 		NewOrder:   baseURL + "/new-order",
 		RevokeCert: baseURL + "/revoke-cert",
+		KeyChange:  baseURL + "/key-change",
 		Meta: directoryMeta{
 			Website:  baseURL,
 			Profiles: profiles,
@@ -50,10 +50,5 @@ func (h *Handler) handleDirectory(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v) //nolint:errcheck
-}
-
-// directoryFromConfig builds a directory using only config (used in tests).
-func directoryFromConfig(cfg *config.Config) *directoryResponse {
-	return buildDirectory(cfg.Server.BaseURL, cfg.Profiles)
+	json.NewEncoder(w).Encode(v) //nolint:errcheck,gosec
 }

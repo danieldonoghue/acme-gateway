@@ -1,3 +1,4 @@
+// Package model defines the core data types used across the acme-gateway.
 package model
 
 import "time"

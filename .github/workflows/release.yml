@@ -181,15 +181,28 @@ jobs:
     needs: [package, docker]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
           name: release-artifacts
           path: release
 
+      - name: Render release notes template
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          DEB_VERSION="${VERSION#v}"
+          sed \
+            -e "s|%%VERSION%%|${VERSION}|g" \
+            -e "s|%%DEB_VERSION%%|${DEB_VERSION}|g" \
+            .github/release-template.md > release-notes.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: release/*
+          body_path: release-notes.md
           generate_release_notes: true
           fail_on_unmatched_files: true

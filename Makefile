@@ -9,10 +9,10 @@ LDFLAGS  := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.date=$(DATE)
 
-.PHONY: build build-linux test vet lint security deb docker-dev docker clean help
+.PHONY: build build-linux test test-e2e test-e2e-staging vet lint security deb docker-dev docker clean help
 
 help: ## Show this help message
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
 # ── Local build (native arch, for running on this machine) ───────────────────

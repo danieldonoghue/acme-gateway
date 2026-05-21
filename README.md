@@ -191,9 +191,10 @@ Releases are produced automatically by the [release workflow](.github/workflows/
 ### Cutting a release
 
 ```bash
-# Ensure main is clean and all tests pass.
-git checkout main && git pull
+# Ensure master is clean and all tests pass.
+git checkout master && git pull
 make test
+make test-e2e
 
 # Tag using semantic versioning.
 git tag v1.2.3
@@ -231,9 +232,11 @@ Tags containing a hyphen (e.g. `v1.0.0-rc.1`) are marked as pre-releases on GitH
 make build-linux    # cross-compile both arches to dist/
 make deb            # build .deb packages via Docker (required on macOS)
 make docker         # build + push multi-arch image (requires docker buildx)
-make test           # run unit tests with race detector
-make lint           # golangci-lint
-make security       # govulncheck + gosec
+make test               # run unit tests with race detector
+make test-e2e           # end-to-end tests against Pebble (requires Docker)
+make test-e2e-staging   # staging Let's Encrypt E2E (requires internet + DNS)
+make lint               # golangci-lint
+make security           # govulncheck + gosec
 ```
 
 ## References

@@ -8,9 +8,10 @@ updates:
       day: monday
     open-pull-requests-limit: 10
     groups:
-      # Batch all indirect dependency bumps into one PR to reduce noise.
-      indirect:
-        dependency-type: indirect
+      # Batch all non-security dependency bumps into one PR to reduce noise.
+      all-dependencies:
+        patterns:
+          - "*"
 
   # Keep GitHub Actions pinned to latest versions.
   # This also acts as the primary mitigation for mutable-tag supply-chain risk

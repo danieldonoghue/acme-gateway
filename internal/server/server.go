@@ -56,12 +56,13 @@ func (s *Server) ListenAndServeTLS(addr string) error {
 	}
 
 	s.httpServer = &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		TLSConfig:    tlsCfg,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 90 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              addr,
+		Handler:           mux,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      90 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	s.log.Info("HTTPS listener starting", "addr", addr)
@@ -97,11 +98,12 @@ func (s *Server) ServeListener(ln net.Listener) error {
 	}
 
 	s.httpServer = &http.Server{
-		Handler:      mux,
-		TLSConfig:    tlsCfg,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 90 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Handler:           mux,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      90 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	s.log.Info("HTTPS listener starting", "addr", ln.Addr())
 	return s.httpServer.ServeTLS(ln, "", "")

@@ -1,0 +1,71 @@
+# golangci-lint v2 configuration
+# https://golangci-lint.run/usage/configuration/
+version: "2"
+
+linters:
+  # Start from the default set and extend it.
+  default: standard
+  enable:
+    - bodyclose       # HTTP response bodies must be closed
+    - errcheck        # All errors must be checked — critical for crypto/TLS code
+    - exhaustive      # Exhaustive switch on enums
+    - gosec           # OWASP-style security checks
+    - govet           # Suspicious code constructs
+    - noctx           # HTTP requests must use a context
+    - nilerr          # Return nil instead of returning the error
+    - reassign        # Prevent reassigning package-level variables
+    - revive          # Comprehensive style/correctness linter
+    - staticcheck     # Static analysis
+    - unused          # Unused code
+
+  settings:
+    errcheck:
+      # Check return values of functions that return error.
+      check-type-assertions: true
+      check-blank: true
+
+    gosec:
+      # G304: file path provided as taint input — expected in config loading.
+      # G101: potential hardcoded credential — false-positive on test fixtures.
+      excludes:
+        - G304
+      config:
+        G306: "0640"   # minimum file permission threshold
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # not enforcing struct layout optimisation
+
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+            - "sayRepetitiveInsteadOfStutters"
+        - name: error-return
+        - name: error-strings
+        - name: var-naming
+
+    staticcheck:
+      checks:
+        - "all"
+        - "-SA1019"  # allow deprecated; we own the callsites
+
+  exclusions:
+    # Test files get more latitude.
+    rules:
+      - path: "_test\\.go$"
+        linters:
+          - gosec
+          - errcheck
+      # Allow unkeyed struct literals in test helpers.
+      - path: "_test\\.go$"
+        text: "composite literal uses unkeyed fields"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 5m

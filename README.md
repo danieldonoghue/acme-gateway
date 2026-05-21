@@ -10,9 +10,9 @@ An ACMEv2 (RFC 8555) gateway that presents a standard ACME server to any ACME cl
 |---|---|
 | `--preferred-profile tlsserver` | Let's Encrypt |
 | `--preferred-profile shortlived` | Let's Encrypt (short-lived profile) |
-| `--preferred-profile tlsclient --key-type rsa` | DigiCert (EAB set A) |
-| `--preferred-profile tlsclient --key-type ecdsa` | DigiCert (EAB set B) |
-| Domain ends in `.internal` | DigiCert (fallback) |
+| `--preferred-profile tlsclient --key-type rsa` | Private CA (EAB set A) |
+| `--preferred-profile tlsclient --key-type ecdsa` | Private CA (EAB set B) |
+| Domain ends in `.internal` | Private CA (fallback) |
 
 Certbot is pointed at `--server https://acme-gateway.internal/directory` and needs zero other changes.
 
@@ -20,8 +20,8 @@ Certbot is pointed at `--server https://acme-gateway.internal/directory` and nee
 
 ```
 Certbot ──ACMEv2──▶ acme-gateway ──ACMEv2──▶ Let's Encrypt
-                         │         ──ACMEv2──▶ DigiCert (RSA)
-                         │         ──ACMEv2──▶ DigiCert (ECDSA)
+                         │         ──ACMEv2──▶ Private CA (RSA)
+                         │         ──ACMEv2──▶ Private CA (ECDSA)
                          │
                      SQLite state
 ```
@@ -42,10 +42,10 @@ cp config.yaml.example config.yaml
 $EDITOR config.yaml
 
 # 2. Set EAB credentials as environment variables
-export DIGICERT_RSA_EAB_KID=...
-export DIGICERT_RSA_EAB_HMAC=...
-export DIGICERT_ECDSA_EAB_KID=...
-export DIGICERT_ECDSA_EAB_HMAC=...
+export PRIVATE_CA_RSA_EAB_KID=...
+export PRIVATE_CA_RSA_EAB_HMAC=...
+export PRIVATE_CA_ECDSA_EAB_KID=...
+export PRIVATE_CA_ECDSA_EAB_HMAC=...
 
 # 3. Build and run
 go build -o acme-gateway ./cmd/acme-gateway
@@ -76,8 +76,8 @@ Any config value may reference environment variables using `${VAR}` syntax:
 
 ```yaml
 eab:
-  key_id:   "${DIGICERT_RSA_EAB_KID}"
-  hmac_key: "${DIGICERT_RSA_EAB_HMAC}"
+  key_id:   "${PRIVATE_CA_RSA_EAB_KID}"
+  hmac_key: "${PRIVATE_CA_RSA_EAB_HMAC}"
 ```
 
 ## Bootstrap (gateway TLS certificate)
@@ -126,8 +126,8 @@ docker run -d \
   -p 443:443 \
   -v /etc/acme-gateway:/etc/acme-gateway \
   -v /var/lib/acme-gateway:/var/lib/acme-gateway \
-  -e DIGICERT_RSA_EAB_KID=... \
-  -e DIGICERT_RSA_EAB_HMAC=... \
+  -e PRIVATE_CA_RSA_EAB_KID=... \
+  -e PRIVATE_CA_RSA_EAB_HMAC=... \
   acme-gateway
 ```
 
@@ -141,7 +141,71 @@ docker run -d \
 
 ## Test Cases
 
-See section 13 of the build specification for end-to-end test cases. Always use LE **staging** and a DigiCert test environment — never test against production LE.
+Always test against LE **staging** (`https://acme-staging-v02.api.letsencrypt.org/directory`) and a private CA test environment — never against production LE.
+
+| # | Scenario | Routing signal | Expected upstream |
+|---|---|---|---|
+| TC-1 | `--preferred-profile tlsserver` | profile | Let's Encrypt, upstream profile `tlsserver` |
+| TC-2 | `--preferred-profile shortlived` | profile | Let's Encrypt, upstream profile `shortlived` |
+| TC-3 | `--required-profile tlsclient --key-type rsa` | profile + key type | Private CA (EAB set A, RSA) |
+| TC-4 | `--required-profile tlsclient --key-type ecdsa` | profile + key type | Private CA (EAB set B, ECDSA) |
+| TC-5 | No profile, domain ends in `.internal` | domain suffix | Private CA (RSA) |
+| TC-6 | Verify `upstream_profile` strip / override / passthrough | — | Confirm via gateway logs or upstream request capture |
+| TC-7 | `certbot renew` | — | Each cert renewed via same upstream as original issuance |
+| TC-8 | First start with `bootstrap.enabled: true`, no cert on disk | — | Bootstrap dns-01 flow runs; HTTPS listener starts |
+| TC-9 | Cert within renewal window | — | Background goroutine renews and reloads cert without restart |
+
+## Release
+
+Releases are produced automatically by the [release workflow](.github/workflows/release.yml) when a `v`-prefixed tag is pushed.
+
+### Cutting a release
+
+```bash
+# Ensure main is clean and all tests pass.
+git checkout main && git pull
+make test
+
+# Tag using semantic versioning.
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The workflow will:
+1. Run tests and `govulncheck` as a preflight gate
+2. Cross-compile `linux/amd64` and `linux/arm64` binaries with version/commit/date embedded
+3. Build four `.deb` packages — Debian 12 (bookworm) and 13 (trixie) × amd64 and arm64
+4. Build and push a multi-arch distroless Docker image to GHCR
+5. Create a GitHub release with all artifacts and auto-generated release notes
+
+### Release artifacts
+
+| Artifact | Description |
+|---|---|
+| `acme-gateway_vX.Y.Z_linux_amd64.tar.gz` | Binary + systemd unit + config example |
+| `acme-gateway_vX.Y.Z_linux_arm64.tar.gz` | Same for arm64 |
+| `acme-gateway_X.Y.Z_debian12_amd64.deb` | Debian 12 package |
+| `acme-gateway_X.Y.Z_debian12_arm64.deb` | Debian 12 arm64 package |
+| `acme-gateway_X.Y.Z_debian13_amd64.deb` | Debian 13 package |
+| `acme-gateway_X.Y.Z_debian13_arm64.deb` | Debian 13 arm64 package |
+| `checksums.txt` | SHA-256 checksums for all artifacts |
+
+Docker images are pushed to `ghcr.io/danieldonoghue/acme-gateway` with tags `vX.Y.Z`, `X.Y`, and `X`.
+
+### Pre-releases
+
+Tags containing a hyphen (e.g. `v1.0.0-rc.1`) are marked as pre-releases on GitHub automatically.
+
+### Local build
+
+```bash
+make build-linux    # cross-compile both arches to dist/
+make deb            # build .deb packages via Docker (required on macOS)
+make docker         # build + push multi-arch image (requires docker buildx)
+make test           # run unit tests with race detector
+make lint           # golangci-lint
+make security       # govulncheck + gosec
+```
 
 ## References
 

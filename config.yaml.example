@@ -34,19 +34,19 @@ upstreams:
   #   directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory"
   #   contact_email: "certadmin@example.com"
 
-  digicert-rsa:
-    directory_url: "https://acme.digicert.com/v2/acme/directory"
+  private-ca-rsa:
+    directory_url: "https://acme.your-private-ca.example/directory"
     contact_email: "certadmin@example.com"
     eab:
-      key_id:   "${DIGICERT_RSA_EAB_KID}"
-      hmac_key: "${DIGICERT_RSA_EAB_HMAC}"
+      key_id:   "${PRIVATE_CA_RSA_EAB_KID}"
+      hmac_key: "${PRIVATE_CA_RSA_EAB_HMAC}"
 
-  digicert-ecdsa:
-    directory_url: "https://acme.digicert.com/v2/acme/directory"
+  private-ca-ecdsa:
+    directory_url: "https://acme.your-private-ca.example/directory"
     contact_email: "certadmin@example.com"
     eab:
-      key_id:   "${DIGICERT_ECDSA_EAB_KID}"
-      hmac_key: "${DIGICERT_ECDSA_EAB_HMAC}"
+      key_id:   "${PRIVATE_CA_ECDSA_EAB_KID}"
+      hmac_key: "${PRIVATE_CA_ECDSA_EAB_HMAC}"
 
 # Profile names here are the gateway's own operator-defined vocabulary.
 # They are advertised in /directory and matched against newOrder requests.
@@ -54,7 +54,7 @@ upstreams:
 profiles:
   tlsserver:  "Server certificate via Let's Encrypt"
   shortlived: "Short-lived (6-day) server certificate via Let's Encrypt"
-  tlsclient:  "Client certificate via DigiCert (RSA or ECDSA based on key type)"
+  tlsclient:  "Client certificate via private CA (RSA or ECDSA based on key type)"
 
 routing:
   rules:
@@ -69,29 +69,29 @@ routing:
       upstream: letsencrypt
       upstream_profile: "tlsserver"
 
-    # Strip (default): DigiCert routing is via EAB credentials, no upstream profile needed.
+    # Strip (default): private CA routing is via EAB credentials, no upstream profile needed.
     - match:
         profile: "tlsclient"
         key_type: "RSA"
-      upstream: digicert-rsa
+      upstream: private-ca-rsa
       # upstream_profile omitted → strip (no profile field sent upstream)
 
     - match:
         profile: "tlsclient"
         key_type: "ECDSA"
-      upstream: digicert-ecdsa
+      upstream: private-ca-ecdsa
 
     # Domain-suffix fallbacks (for clients not using --preferred-profile).
     - match:
         domain_suffix: ".internal"
-      upstream: digicert-rsa
+      upstream: private-ca-rsa
 
     - match:
         key_type: "RSA"
-      upstream: digicert-rsa
+      upstream: private-ca-rsa
 
     - match:
         key_type: "ECDSA"
-      upstream: digicert-ecdsa
+      upstream: private-ca-ecdsa
 
   default_upstream: letsencrypt

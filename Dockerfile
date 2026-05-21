@@ -1,4 +1,7 @@
 # ── Build stage ───────────────────────────────────────────────────────────────
+# This Dockerfile builds from source — useful for local development and quick
+# testing.  For production / CI releases use Dockerfile.release which copies a
+# pre-compiled binary into a distroless image.
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src

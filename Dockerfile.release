@@ -1,0 +1,35 @@
+# Lightweight runtime image used by CI.
+# The pre-compiled binary for each arch is placed at dist/acme-gateway_linux_<arch>
+# before running docker buildx build; TARGETARCH selects the correct file.
+#
+# Uses distroless/static (no shell, no package manager, ~2 MB) rather than
+# Alpine.  The binary is CGO_ENABLED=0 so no libc is required.  ca-certificates
+# are bundled in the distroless base image.
+
+# ── prep stage: create writable runtime directories ───────────────────────────
+FROM busybox:1.37 AS prep
+RUN mkdir -p /etc/acme-gateway /var/lib/acme-gateway
+
+# ── final stage ───────────────────────────────────────────────────────────────
+# nonroot variant runs as uid/gid 65532; no shell present.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+# TARGETARCH is automatically set by buildx (amd64 | arm64).
+ARG TARGETARCH
+
+# Copy runtime directories from prep stage.
+# /etc/acme-gateway — config bind-mount (root-owned, group-readable)
+# /var/lib/acme-gateway — SQLite state (service-user writable)
+COPY --from=prep /etc/acme-gateway            /etc/acme-gateway
+COPY --from=prep --chown=65532:65532 /var/lib/acme-gateway /var/lib/acme-gateway
+
+COPY dist/acme-gateway_linux_${TARGETARCH} /usr/local/bin/acme-gateway
+
+# Config file and hook scripts are expected to be bind-mounted at runtime.
+VOLUME ["/etc/acme-gateway", "/var/lib/acme-gateway"]
+
+# USER 65532 is already set by the nonroot base image.
+EXPOSE 443
+
+ENTRYPOINT ["/usr/local/bin/acme-gateway"]
+CMD ["-config", "/etc/acme-gateway/config.yaml"]

@@ -22,11 +22,19 @@ import (
 	"github.com/danieldonoghue/acme-gateway/internal/upstream"
 )
 
+// Build-time variables injected by goreleaser via -ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log.Info("acme-gateway starting", "version", version, "commit", commit, "date", date)
 
 	if err := run(*cfgPath, log); err != nil {
 		log.Error("fatal", "err", err)

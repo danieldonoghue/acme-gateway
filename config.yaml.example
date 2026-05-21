@@ -1,0 +1,97 @@
+# acme-gateway configuration example
+# Copy to config.yaml and edit before running.
+# Sensitive values support ${ENV_VAR} interpolation.
+
+server:
+  listen: ":443"
+  base_url: "https://acme-gateway.internal"
+
+state:
+  db_path: "/var/lib/acme-gateway/state.db"
+
+# Gateway TLS certificate — obtained automatically via dns-01 on first start.
+bootstrap:
+  enabled: true
+  upstream: letsencrypt           # must match a key in the upstreams block
+  domain: "acme-gateway.internal"
+  contact_email: "certadmin@example.com"
+  challenge: dns-01
+  cert_path: "/etc/acme-gateway/server.crt"
+  key_path:  "/etc/acme-gateway/server.key"
+  renew_before_days: 30
+  dns_hook:
+    deploy_script:  "/etc/acme-gateway/hooks/deploy-dns.sh"
+    cleanup_script: "/etc/acme-gateway/hooks/cleanup-dns.sh"
+
+upstreams:
+  letsencrypt:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    contact_email: "certadmin@example.com"
+    # No EAB required for Let's Encrypt.
+
+  # For LE staging tests, replace with:
+  # letsencrypt:
+  #   directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory"
+  #   contact_email: "certadmin@example.com"
+
+  digicert-rsa:
+    directory_url: "https://acme.digicert.com/v2/acme/directory"
+    contact_email: "certadmin@example.com"
+    eab:
+      key_id:   "${DIGICERT_RSA_EAB_KID}"
+      hmac_key: "${DIGICERT_RSA_EAB_HMAC}"
+
+  digicert-ecdsa:
+    directory_url: "https://acme.digicert.com/v2/acme/directory"
+    contact_email: "certadmin@example.com"
+    eab:
+      key_id:   "${DIGICERT_ECDSA_EAB_KID}"
+      hmac_key: "${DIGICERT_ECDSA_EAB_HMAC}"
+
+# Profile names here are the gateway's own operator-defined vocabulary.
+# They are advertised in /directory and matched against newOrder requests.
+# They have NO required relationship to any upstream CA's profile namespace.
+profiles:
+  tlsserver:  "Server certificate via Let's Encrypt"
+  shortlived: "Short-lived (6-day) server certificate via Let's Encrypt"
+  tlsclient:  "Client certificate via DigiCert (RSA or ECDSA based on key type)"
+
+routing:
+  rules:
+    # Override: map gateway profile → LE's own profile name explicitly.
+    - match:
+        profile: "shortlived"
+      upstream: letsencrypt
+      upstream_profile: "shortlived"
+
+    - match:
+        profile: "tlsserver"
+      upstream: letsencrypt
+      upstream_profile: "tlsserver"
+
+    # Strip (default): DigiCert routing is via EAB credentials, no upstream profile needed.
+    - match:
+        profile: "tlsclient"
+        key_type: "RSA"
+      upstream: digicert-rsa
+      # upstream_profile omitted → strip (no profile field sent upstream)
+
+    - match:
+        profile: "tlsclient"
+        key_type: "ECDSA"
+      upstream: digicert-ecdsa
+
+    # Domain-suffix fallbacks (for clients not using --preferred-profile).
+    - match:
+        domain_suffix: ".internal"
+      upstream: digicert-rsa
+
+    - match:
+        key_type: "RSA"
+      upstream: digicert-rsa
+
+    - match:
+        key_type: "ECDSA"
+      upstream: digicert-ecdsa
+
+  default_upstream: letsencrypt

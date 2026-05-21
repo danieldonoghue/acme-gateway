@@ -1,0 +1,56 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# Go build outputs
+/acme-gateway
+/cmd/acme-gateway/acme-gateway
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go module cache artifacts (never commit these)
+vendor/
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Runtime files (never commit production secrets or state)
+config.yaml
+*.db
+*.db-wal
+*.db-shm
+
+# TLS credentials
+*.crt
+*.key
+*.pem
+
+# Environment secrets
+*.env
+secrets.*
+
+# Editor temp files
+*~
+*.swp
+*.swo
+\#*\#
+
+# macOS Finder
+Icon?
+ehthumbs.db
+Thumbs.db

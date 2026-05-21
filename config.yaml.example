@@ -16,7 +16,7 @@ state:
 #
 # NOTE (enabled: false): the gateway loads the keypair once at startup and does
 # not reload it automatically. Restart the gateway after an external renewal to
-# serve the new certificate. SIGHUP-triggered live reload is a planned enhancement.
+# serve the new certificate.
 bootstrap:
   enabled: true
   upstream: letsencrypt           # must match a key in the upstreams block

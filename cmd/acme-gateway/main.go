@@ -102,9 +102,8 @@ func run(cfgPath string, log *slog.Logger) error {
 		//
 		// NOTE: there is no live-reload for the external path. If an external
 		// renewer (cert-manager, Ansible cron, etc.) rewrites the files, the
-		// gateway must be restarted to pick up the new certificate. A future
-		// enhancement could add a SIGHUP handler or a periodic stat-and-reload
-		// loop using the same SetCertificate plumbing as the bootstrap renewal path.
+		// gateway must be restarted to pick up the new certificate.
+		// See docs/decisions/0003-no-live-reload-external-cert.md.
 		tlsCert, err := tls.LoadX509KeyPair(cfg.Bootstrap.CertPath, cfg.Bootstrap.KeyPath)
 		if err != nil {
 			return fmt.Errorf("loading external TLS certificate: %w", err)

@@ -12,9 +12,9 @@ import (
 func (s *Store) SaveOrder(o *model.Order) error {
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO orders
-		 (id, account_id, upstream_id, upstream_order_url, status, identifiers, profile, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.ID, o.AccountID, o.UpstreamID, o.UpstreamOrderURL,
+		 (id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		o.ID, o.AccountID, o.UpstreamID, o.UpstreamSlot, o.UpstreamOrderURL,
 		o.Status, o.Identifiers, o.Profile,
 		o.CreatedAt.UTC().Format(time.RFC3339),
 		o.UpdatedAt.UTC().Format(time.RFC3339),
@@ -25,7 +25,7 @@ func (s *Store) SaveOrder(o *model.Order) error {
 // GetOrder retrieves an order by its gateway ID. Returns nil, nil if not found.
 func (s *Store) GetOrder(id string) (*model.Order, error) {
 	row := s.db.QueryRow(
-		`SELECT id, account_id, upstream_id, upstream_order_url, status, identifiers, profile, created_at, updated_at
+		`SELECT id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, created_at, updated_at
 		 FROM orders WHERE id = ?`, id,
 	)
 	return scanOrder(row)
@@ -51,7 +51,7 @@ func scanOrder(row *sql.Row) (*model.Order, error) {
 	var o model.Order
 	var createdAt, updatedAt string
 	if err := row.Scan(
-		&o.ID, &o.AccountID, &o.UpstreamID, &o.UpstreamOrderURL,
+		&o.ID, &o.AccountID, &o.UpstreamID, &o.UpstreamSlot, &o.UpstreamOrderURL,
 		&o.Status, &o.Identifiers, &o.Profile, &createdAt, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {

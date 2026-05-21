@@ -64,7 +64,7 @@ cat > "${BUILD_DIR}/DEBIAN/control" << EOF
 Package: acme-gateway
 Version: ${VERSION}
 Architecture: ${ARCH}
-Maintainer: Daniel Donoghue <maintainer@example.com>
+Maintainer: Daniel Donoghue <oneofsomany@hotmail.com>
 Section: net
 Priority: optional
 Depends: systemd

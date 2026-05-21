@@ -65,6 +65,12 @@ type UpstreamConfig struct {
 	DirectoryURL string     `yaml:"directory_url"`
 	ContactEmail string     `yaml:"contact_email"`
 	EAB          *EABConfig `yaml:"eab,omitempty"`
+	// AccountCount is the number of independent ACME accounts to maintain at
+	// this upstream. Multiple accounts spread new-order rate limits across
+	// accounts (e.g. Let's Encrypt allows 50 new orders per account per 3 h).
+	// Requires no EAB; EAB upstreams need one credential set per account and
+	// should instead be configured as separate upstream entries. Defaults to 1.
+	AccountCount int `yaml:"account_count,omitempty"`
 }
 
 // RoutingConfig holds the ordered list of routing rules and the default upstream.
@@ -150,6 +156,9 @@ func validate(cfg *Config) error {
 	for name, up := range cfg.Upstreams {
 		if up.DirectoryURL == "" {
 			return fmt.Errorf("upstreams.%s: directory_url is required", name)
+		}
+		if up.AccountCount > 1 && up.EAB != nil {
+			return fmt.Errorf("upstreams.%s: account_count > 1 requires no EAB (each account needs its own credential; configure separate upstream entries instead)", name)
 		}
 	}
 

@@ -27,6 +27,11 @@ upstreams:
   letsencrypt:
     directory_url: "https://acme-v02.api.letsencrypt.org/directory"
     contact_email: "certadmin@example.com"
+    # account_count spreads new orders across N independent ACME accounts to
+    # stay within Let's Encrypt's 50-orders-per-account-per-3h rate limit.
+    # For a fleet of 50 servers all renewing at the same time, 2 accounts
+    # provides comfortable headroom. Not compatible with EAB upstreams.
+    account_count: 3
     # No EAB required for Let's Encrypt.
 
   # For LE staging tests, replace with:

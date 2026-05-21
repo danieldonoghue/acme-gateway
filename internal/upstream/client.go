@@ -23,6 +23,11 @@ import (
 	"github.com/go-jose/go-jose/v4"
 )
 
+// noncePoolSize is the number of upstream nonces cached in memory.
+// A pool reduces HEAD /new-nonce round-trips when many goroutines make
+// concurrent signed requests to the same upstream CA.
+const noncePoolSize = 8
+
 // Client is a signed-HTTP ACME client for a single upstream CA.
 // It manages nonces, account keypairs, and JWS signing for all upstream requests.
 type Client struct {
@@ -32,8 +37,14 @@ type Client struct {
 	mu         sync.Mutex
 	key        *ecdsa.PrivateKey
 	accountURL string // empty until account is registered
-	nonce      string // latest available nonce (empty = fetch fresh)
 	directory  *ACMEDirectory
+
+	// Nonce ring buffer. nonceCount is the number of cached nonces;
+	// nonceHead is the next index to read, nonceTail the next to write.
+	nonces     [noncePoolSize]string
+	nonceHead  int
+	nonceTail  int
+	nonceCount int
 }
 
 // ACMEDirectory holds the URLs from the upstream /directory endpoint.
@@ -172,12 +183,15 @@ func (c *Client) Directory(ctx context.Context) (*ACMEDirectory, error) {
 	return &dir, nil
 }
 
-// getNonce returns a fresh nonce, fetching one from the upstream if needed.
+// getNonce returns a cached nonce if one is available, otherwise fetches a
+// fresh one from the upstream CA via HEAD /new-nonce.
 func (c *Client) getNonce(ctx context.Context) (string, error) {
 	c.mu.Lock()
-	if c.nonce != "" {
-		n := c.nonce
-		c.nonce = ""
+	if c.nonceCount > 0 {
+		n := c.nonces[c.nonceHead]
+		c.nonces[c.nonceHead] = ""
+		c.nonceHead = (c.nonceHead + 1) % noncePoolSize
+		c.nonceCount--
 		c.mu.Unlock()
 		return n, nil
 	}
@@ -205,13 +219,19 @@ func (c *Client) getNonce(ctx context.Context) (string, error) {
 	return n, nil
 }
 
-// saveNonce stores a nonce extracted from a response header for reuse.
+// saveNonce adds a nonce from a response header to the pool for reuse.
+// If the pool is full the nonce is dropped — the next caller will fetch a fresh one.
 func (c *Client) saveNonce(n string) {
 	if n == "" {
 		return
 	}
 	c.mu.Lock()
-	c.nonce = n
+	if c.nonceCount < noncePoolSize {
+		c.nonces[c.nonceTail] = n
+		c.nonceTail = (c.nonceTail + 1) % noncePoolSize
+		c.nonceCount++
+	}
+	// Pool full: discard — caller will fetch fresh on next request.
 	c.mu.Unlock()
 }
 

@@ -15,6 +15,7 @@ type Account struct {
 // UpstreamAccount represents the gateway's own account at an upstream CA.
 type UpstreamAccount struct {
 	UpstreamID string    `json:"upstreamId"`
+	Slot       int       `json:"slot"` // 0-based index within the upstream's account pool
 	AccountURL string    `json:"accountUrl"`
 	PrivateKey string    `json:"privateKey"` // PEM-encoded ECDSA key
 	CreatedAt  time.Time `json:"createdAt"`
@@ -25,6 +26,7 @@ type Order struct {
 	ID               string    `json:"id"`
 	AccountID        string    `json:"accountId"`
 	UpstreamID       string    `json:"upstreamId"`
+	UpstreamSlot     int       `json:"upstreamSlot"` // which account slot within UpstreamID was used
 	UpstreamOrderURL string    `json:"upstreamOrderUrl"`
 	Status           string    `json:"status"`            // pending/ready/processing/valid/invalid
 	Identifiers      string    `json:"identifiers"`       // JSON array

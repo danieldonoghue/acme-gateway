@@ -349,8 +349,9 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamProfile := router.ResolveUpstreamProfile(decision, req.Profile)
 
-	// Ensure the gateway has an account at this upstream.
-	client, err := h.pool.EnsureAccount(r.Context(), decision.UpstreamID)
+	// Ensure the gateway has an account at this upstream and select a slot for
+	// this order using round-robin across the upstream's account pool.
+	client, slot, err := h.pool.NextClient(r.Context(), decision.UpstreamID)
 	if err != nil {
 		h.log.Error("upstream account error", "upstream", decision.UpstreamID, "err", err)
 		h.writeError(w, errServerInternal("upstream account unavailable"))
@@ -379,6 +380,7 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		ID:               orderID,
 		AccountID:        acct.ID,
 		UpstreamID:       decision.UpstreamID,
+		UpstreamSlot:     slot,
 		UpstreamOrderURL: upOrderURL,
 		Status:           upOrder.Status,
 		Identifiers:      string(idJSON),
@@ -466,7 +468,7 @@ func (h *Handler) handleOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.Get(order.UpstreamID)
+	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -520,7 +522,7 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.Get(order.UpstreamID)
+	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -544,9 +546,8 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		if rm != nil {
 			gatewayID = rm.GatewayID
 		} else {
-			gatewayID = uuid.New().String()
 			if err := h.store.SaveResource(&model.ResourceMap{
-				GatewayID:    gatewayID,
+				GatewayID:    uuid.New().String(),
 				ResourceType: model.ResourceTypeChallenge,
 				OrderID:      order.ID,
 				UpstreamURL:  chal.URL,
@@ -554,6 +555,15 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 				h.writeError(w, errServerInternal("saving challenge resource"))
 				return
 			}
+			// Re-read after INSERT OR IGNORE: if two goroutines raced on the same
+			// authz URL, the winner's UUID was persisted; always use the stored
+			// gateway_id so the returned URL resolves correctly.
+			persisted, err := h.store.GetResourceByUpstreamURL(chal.URL)
+			if err != nil || persisted == nil {
+				h.writeError(w, errServerInternal("reading challenge resource"))
+				return
+			}
+			gatewayID = persisted.GatewayID
 		}
 		rewrittenChallenges[i] = map[string]interface{}{
 			"type":   chal.Type,
@@ -606,7 +616,7 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.Get(order.UpstreamID)
+	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -676,7 +686,7 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.Get(order.UpstreamID)
+	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -704,25 +714,25 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 	certID := chi.URLParam(r, "id")
 	rm, err := h.store.GetResource(certID)
 	if err != nil || rm == nil {
-		http.Error(w, "certificate not found", http.StatusNotFound)
+		h.writeError(w, errNotFound("certificate not found"))
 		return
 	}
 
 	order, err := h.store.GetOrder(rm.OrderID)
 	if err != nil || order == nil {
-		http.Error(w, "order not found", http.StatusNotFound)
+		h.writeError(w, errNotFound("order not found"))
 		return
 	}
 
-	client, err := h.pool.Get(order.UpstreamID)
+	client, err := h.pool.GetSlot(order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
-		http.Error(w, "upstream unavailable", http.StatusInternalServerError)
+		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
 	}
 
 	chain, err := client.FetchCertificate(r.Context(), rm.UpstreamURL)
 	if err != nil {
-		http.Error(w, "fetching certificate: "+err.Error(), http.StatusBadGateway)
+		h.writeError(w, errServerInternal("fetching certificate: "+err.Error()))
 		return
 	}
 
@@ -806,10 +816,12 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	// route to the default upstream — acceptable for normal ACME clients, which always
 	// fetch the cert before they could revoke it.
 	upstreamID := h.cfg.Routing.DefaultUpstream
+	upstreamSlot := 0
 	fp := hex.EncodeToString(sha256sum(certDER))
 	if certRM, err := h.store.GetResourceByCertFingerprint(fp); err == nil && certRM != nil {
 		if certOrder, err := h.store.GetOrder(certRM.OrderID); err == nil && certOrder != nil {
 			upstreamID = certOrder.UpstreamID
+			upstreamSlot = certOrder.UpstreamSlot
 		}
 	}
 	reason := -1
@@ -817,7 +829,7 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 		reason = *req.Reason
 	}
 
-	client, err := h.pool.Get(upstreamID)
+	client, err := h.pool.GetSlot(upstreamID, upstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -889,16 +901,17 @@ func (h *Handler) buildOrderResponse(orderID string, upOrder *upstream.ACMEOrder
 	if upOrder.Certificate != "" {
 		rm, _ := h.store.GetResourceByUpstreamURL(upOrder.Certificate)
 		if rm == nil {
-			certID := uuid.New().String()
-			if err := h.store.SaveResource(&model.ResourceMap{
-				GatewayID:    certID,
+			// INSERT OR IGNORE: if two goroutines race on the same order poll,
+			// only one UUID wins; re-read to always use the persisted gateway_id.
+			h.store.SaveResource(&model.ResourceMap{ //nolint:errcheck
+				GatewayID:    uuid.New().String(),
 				ResourceType: model.ResourceTypeCert,
 				OrderID:      orderID,
 				UpstreamURL:  upOrder.Certificate,
-			}); err == nil {
-				certURL = h.cfg.Server.BaseURL + "/cert/" + certID
-			}
-		} else {
+			})
+			rm, _ = h.store.GetResourceByUpstreamURL(upOrder.Certificate)
+		}
+		if rm != nil {
 			certURL = h.cfg.Server.BaseURL + "/cert/" + rm.GatewayID
 		}
 	}

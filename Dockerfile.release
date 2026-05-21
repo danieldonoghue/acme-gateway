@@ -18,9 +18,10 @@ FROM gcr.io/distroless/static-debian12:nonroot
 ARG TARGETARCH
 
 # Copy runtime directories from prep stage.
-# /etc/acme-gateway — config bind-mount (root-owned, group-readable)
-# /var/lib/acme-gateway — SQLite state (service-user writable)
-COPY --from=prep /etc/acme-gateway            /etc/acme-gateway
+# Both directories are owned by uid 65532 (distroless nonroot user) so the
+# gateway can write cert/key/account files under /etc/acme-gateway and state
+# under /var/lib/acme-gateway without privilege escalation.
+COPY --from=prep --chown=65532:65532 /etc/acme-gateway     /etc/acme-gateway
 COPY --from=prep --chown=65532:65532 /var/lib/acme-gateway /var/lib/acme-gateway
 
 COPY dist/acme-gateway_linux_${TARGETARCH} /usr/local/bin/acme-gateway

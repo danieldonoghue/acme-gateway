@@ -16,80 +16,140 @@ import (
 	"github.com/danieldonoghue/acme-gateway/internal/store"
 )
 
-// Pool manages one Client per configured upstream CA, lazily initialising
-// accounts and caching clients in memory.
+// Pool manages a slice of Clients per configured upstream CA, lazily initialising
+// accounts and caching clients in memory. Multiple accounts per upstream let the
+// gateway spread new-order load across LE's per-account rate limits.
 type Pool struct {
 	cfg   *config.Config
 	store *store.Store
 
-	mu      sync.Mutex
-	clients map[string]*Client
+	mu       sync.Mutex
+	clients  map[string][]*Client // keyed by upstream ID, indexed by slot
+	nextSlot map[string]int       // round-robin counter per upstream
+
+	// regMu serialises the regMap itself; individual entries are per (upstream, slot).
+	regMu  sync.Mutex
+	regMap map[string]*sync.Mutex // key: "upstreamID:slot"
 }
 
 // NewPool creates a Pool from the application config.
 func NewPool(cfg *config.Config, st *store.Store) *Pool {
 	return &Pool{
-		cfg:     cfg,
-		store:   st,
-		clients: make(map[string]*Client),
+		cfg:      cfg,
+		store:    st,
+		clients:  make(map[string][]*Client),
+		nextSlot: make(map[string]int),
+		regMap:   make(map[string]*sync.Mutex),
 	}
 }
 
-// Get returns the Client for the given upstream ID.
-// If an account keypair exists in the store it is loaded; otherwise a new key is generated
-// but NOT yet registered (call EnsureAccount to register).
-func (p *Pool) Get(upstreamID string) (*Client, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.getOrCreate(upstreamID)
+// slotRegLock returns the per-(upstream, slot) mutex used to serialise account
+// registration. Different slots for the same upstream can register concurrently.
+func (p *Pool) slotRegLock(upstreamID string, slot int) *sync.Mutex {
+	key := fmt.Sprintf("%s:%d", upstreamID, slot)
+	p.regMu.Lock()
+	defer p.regMu.Unlock()
+	if _, ok := p.regMap[key]; !ok {
+		p.regMap[key] = &sync.Mutex{}
+	}
+	return p.regMap[key]
 }
 
-// EnsureAccount ensures the gateway has a registered account at upstreamID,
-// creating and persisting one (with EAB if configured) if needed.
-// It is safe to call concurrently; the first caller registers and subsequent
-// callers reuse the result.
-func (p *Pool) EnsureAccount(ctx context.Context, upstreamID string) (*Client, error) {
+// NextClient selects the next slot for upstreamID using round-robin and returns
+// the associated Client together with the chosen slot index. The account is
+// registered with the upstream CA on first use. Use NextClient when creating a
+// new order so the slot is known and can be stored with the order.
+func (p *Pool) NextClient(ctx context.Context, upstreamID string) (*Client, int, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	client, err := p.getOrCreate(upstreamID)
+	clients, err := p.getOrCreateAll(upstreamID)
 	if err != nil {
+		p.mu.Unlock()
+		return nil, 0, err
+	}
+	n := len(clients)
+	slot := p.nextSlot[upstreamID] % n
+	p.nextSlot[upstreamID] = (slot + 1) % n
+	client := clients[slot]
+	p.mu.Unlock()
+
+	if err := p.ensureSlotRegistered(ctx, upstreamID, slot, client); err != nil {
+		return nil, 0, err
+	}
+	return client, slot, nil
+}
+
+// GetSlot returns the Client for a specific upstream and slot. Use this for all
+// operations on an existing order (poll, authz, finalize, cert, revoke) where
+// the slot was recorded when the order was created.
+// If slot is out of range (e.g. a legacy order that predates multi-account
+// support) it is clamped to 0.
+func (p *Pool) GetSlot(upstreamID string, slot int) (*Client, error) {
+	p.mu.Lock()
+	clients, err := p.getOrCreateAll(upstreamID)
+	if err != nil {
+		p.mu.Unlock()
 		return nil, err
 	}
+	if slot < 0 || slot >= len(clients) {
+		slot = 0
+	}
+	client := clients[slot]
+	p.mu.Unlock()
+	return client, nil
+}
 
+// Get returns the slot-0 client for upstreamID. It exists for code paths that
+// do not have a stored slot (e.g. the revocation fallback when the certificate
+// issuer is unknown).
+func (p *Pool) Get(upstreamID string) (*Client, error) {
+	return p.GetSlot(upstreamID, 0)
+}
+
+// ensureSlotRegistered registers the client's ACME account if it has not yet
+// been registered. Only one goroutine per (upstream, slot) pair performs the
+// upstream HTTP round-trip; others wait and then reuse the result.
+func (p *Pool) ensureSlotRegistered(ctx context.Context, upstreamID string, slot int, client *Client) error {
 	if client.AccountURL() != "" {
-		return client, nil // already registered
+		return nil // fast path
+	}
+
+	mu := p.slotRegLock(upstreamID, slot)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Double-check after acquiring the lock.
+	if client.AccountURL() != "" {
+		return nil
 	}
 
 	upCfg := p.cfg.Upstreams[upstreamID]
-
-	// Register with the upstream CA.
 	accountURL, err := client.Register(ctx, upCfg.ContactEmail, upCfg.EAB)
 	if err != nil {
-		return nil, fmt.Errorf("registering with %q: %w", upstreamID, err)
+		return fmt.Errorf("registering with %q slot %d: %w", upstreamID, slot, err)
 	}
 
-	// Persist the keypair and account URL.
 	keyPEM, err := client.KeyPEM()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	ua := &model.UpstreamAccount{
 		UpstreamID: upstreamID,
+		Slot:       slot,
 		AccountURL: accountURL,
 		PrivateKey: string(keyPEM),
 		CreatedAt:  time.Now().UTC(),
 	}
 	if err := p.store.SaveUpstreamAccount(ua); err != nil {
-		return nil, fmt.Errorf("persisting upstream account: %w", err)
+		return fmt.Errorf("persisting upstream account %q slot %d: %w", upstreamID, slot, err)
 	}
-	return client, nil
+	return nil
 }
 
-// getOrCreate is the internal (already-locked) get-or-create for a client.
-func (p *Pool) getOrCreate(upstreamID string) (*Client, error) {
-	if c, ok := p.clients[upstreamID]; ok {
-		return c, nil
+// getOrCreateAll is the internal (caller must hold p.mu) function that returns
+// the full slice of Clients for an upstream, creating them if needed.
+func (p *Pool) getOrCreateAll(upstreamID string) ([]*Client, error) {
+	if cs, ok := p.clients[upstreamID]; ok {
+		return cs, nil
 	}
 
 	upCfg, ok := p.cfg.Upstreams[upstreamID]
@@ -97,36 +157,43 @@ func (p *Pool) getOrCreate(upstreamID string) (*Client, error) {
 		return nil, fmt.Errorf("upstream %q not in config", upstreamID)
 	}
 
-	// Load existing keypair from the store, or generate a fresh one.
-	ua, err := p.store.GetUpstreamAccount(upstreamID)
-	if err != nil {
-		return nil, fmt.Errorf("loading upstream account: %w", err)
+	count := upCfg.AccountCount
+	if count < 1 {
+		count = 1
 	}
 
-	var key *ecdsa.PrivateKey
-	if ua != nil {
-		key, err = parseECPrivateKeyPEM([]byte(ua.PrivateKey))
+	clients := make([]*Client, count)
+	for slot := 0; slot < count; slot++ {
+		ua, err := p.store.GetUpstreamAccountBySlot(upstreamID, slot)
 		if err != nil {
-			return nil, fmt.Errorf("parsing upstream key for %q: %w", upstreamID, err)
+			return nil, fmt.Errorf("loading upstream account %q slot %d: %w", upstreamID, slot, err)
 		}
-	} else {
-		key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+		var key *ecdsa.PrivateKey
+		if ua != nil {
+			key, err = parseECPrivateKeyPEM([]byte(ua.PrivateKey))
+			if err != nil {
+				return nil, fmt.Errorf("parsing upstream key for %q slot %d: %w", upstreamID, slot, err)
+			}
+		} else {
+			key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				return nil, fmt.Errorf("generating upstream key: %w", err)
+			}
+		}
+
+		client, err := New(upCfg.DirectoryURL, key)
 		if err != nil {
-			return nil, fmt.Errorf("generating upstream key: %w", err)
+			return nil, err
 		}
+		if ua != nil {
+			client.SetAccountURL(ua.AccountURL)
+		}
+		clients[slot] = client
 	}
 
-	client, err := New(upCfg.DirectoryURL, key)
-	if err != nil {
-		return nil, err
-	}
-
-	if ua != nil {
-		client.SetAccountURL(ua.AccountURL)
-	}
-
-	p.clients[upstreamID] = client
-	return client, nil
+	p.clients[upstreamID] = clients
+	return clients, nil
 }
 
 // GenerateKeyPEM generates a fresh P-256 private key and returns the PEM encoding.

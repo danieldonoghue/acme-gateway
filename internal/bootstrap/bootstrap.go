@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,7 +127,8 @@ func (m *Manager) acquire(ctx context.Context) error {
 	accountURLPath := m.accountKeyPath() + ".url"
 	savedURL := ""
 	if data, err := os.ReadFile(accountURLPath); err == nil {
-		if u := strings.TrimSpace(string(data)); strings.HasPrefix(u, "http") {
+		u := strings.TrimSpace(string(data))
+		if p, err := url.Parse(u); err == nil && p.Scheme == "https" && p.Host != "" {
 			savedURL = u
 		}
 	}

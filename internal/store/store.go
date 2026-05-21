@@ -21,9 +21,12 @@ func New(path string) (*Store, error) {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
 
-	// Serialise writes; WAL enables concurrent reads.
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
+	// WAL mode: allow a small connection pool so concurrent reads proceed in
+	// parallel. Writes still serialise at the SQLite level; busy_timeout gives
+	// writers a retry budget instead of failing immediately with SQLITE_BUSY.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
 		return nil, fmt.Errorf("setting pragmas: %w", err)
 	}
 
@@ -57,22 +60,25 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 CREATE TABLE IF NOT EXISTS upstream_accounts (
-  upstream_id TEXT NOT NULL PRIMARY KEY,
-  account_url TEXT NOT NULL,
-  private_key TEXT NOT NULL,
-  created_at  TEXT NOT NULL
+  upstream_id TEXT    NOT NULL,
+  slot        INTEGER NOT NULL DEFAULT 0,
+  account_url TEXT    NOT NULL,
+  private_key TEXT    NOT NULL,
+  created_at  TEXT    NOT NULL,
+  PRIMARY KEY (upstream_id, slot)
 );
 
 CREATE TABLE IF NOT EXISTS orders (
-  id                 TEXT PRIMARY KEY,
-  account_id         TEXT NOT NULL,
-  upstream_id        TEXT NOT NULL,
-  upstream_order_url TEXT NOT NULL,
-  status             TEXT NOT NULL,
-  identifiers        TEXT NOT NULL,
-  profile            TEXT NOT NULL DEFAULT '',
-  created_at         TEXT NOT NULL,
-  updated_at         TEXT NOT NULL,
+  id                 TEXT    PRIMARY KEY,
+  account_id         TEXT    NOT NULL,
+  upstream_id        TEXT    NOT NULL,
+  upstream_slot      INTEGER NOT NULL DEFAULT 0,
+  upstream_order_url TEXT    NOT NULL,
+  status             TEXT    NOT NULL,
+  identifiers        TEXT    NOT NULL,
+  profile            TEXT    NOT NULL DEFAULT '',
+  created_at         TEXT    NOT NULL,
+  updated_at         TEXT    NOT NULL,
   FOREIGN KEY (account_id) REFERENCES accounts(id)
 );
 
@@ -97,7 +103,25 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
-	// Add cert_fingerprint to existing databases that predate this column.
-	s.db.Exec(`ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`) //nolint:errcheck
+	// Idempotent column additions for databases predating this schema version.
+	s.db.Exec(`ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`)              //nolint:errcheck
+	s.db.Exec(`ALTER TABLE orders ADD COLUMN upstream_slot INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+	// Migrate upstream_accounts from single-PK to composite (upstream_id, slot) PK.
+	// Detect the old schema by checking whether the slot column exists.
+	var slotExists int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstream_accounts') WHERE name='slot'`).Scan(&slotExists) //nolint:errcheck
+	if slotExists == 0 {
+		s.db.Exec(`ALTER TABLE upstream_accounts RENAME TO upstream_accounts_v1`) //nolint:errcheck
+		s.db.Exec(`CREATE TABLE upstream_accounts (
+  upstream_id TEXT    NOT NULL,
+  slot        INTEGER NOT NULL DEFAULT 0,
+  account_url TEXT    NOT NULL,
+  private_key TEXT    NOT NULL,
+  created_at  TEXT    NOT NULL,
+  PRIMARY KEY (upstream_id, slot)
+)`) //nolint:errcheck
+		s.db.Exec(`INSERT OR IGNORE INTO upstream_accounts SELECT upstream_id,0,account_url,private_key,created_at FROM upstream_accounts_v1`) //nolint:errcheck
+		s.db.Exec(`DROP TABLE IF EXISTS upstream_accounts_v1`)                                                                                 //nolint:errcheck
+	}
 	return nil
 }

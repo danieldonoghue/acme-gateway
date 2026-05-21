@@ -65,6 +65,18 @@ See [config.yaml.example](config.yaml.example) for a fully annotated configurati
 - `upstream_profile: "name"` → always send this name upstream (override)
 - `upstream_profile: "$passthrough"` → forward the inbound profile verbatim
 
+**Multiple accounts per upstream (`account_count`)** — Let's Encrypt allows 50 new orders per account per 3-hour window. A fleet where every server renews at the start of the month might exhaust that quota quicky. `account_count: N` tells the gateway to maintain N independent ACME accounts at an upstream and distribute new orders across them round-robin. Each account's keypair and registration URL are persisted in the SQLite database; the account slot is stored with every order so that subsequent operations (authz, finalize, cert, revoke) always use the matching keypair.
+
+```yaml
+upstreams:
+  letsencrypt:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    contact_email: "certadmin@example.com"
+    account_count: 3   # spreads load across 3 accounts → 150 orders/3h headroom
+```
+
+`account_count` is only valid for upstreams without EAB (each ACME account requires its own unique EAB credential; for EAB upstreams configure separate upstream entries instead). Defaults to 1.
+
 **Routing signals** — Evaluated in priority order within each rule (all conditions ANDed):
 1. `profile` — from `--preferred-profile` / `--required-profile` in Certbot 4.0+
 2. `key_type` — RSA or ECDSA, detected from the account's registered public key
@@ -134,7 +146,7 @@ docker run -d \
 ## Operational Notes
 
 - **Back up the SQLite database.** It contains the gateway's upstream account keypairs. Loss requires re-registration with each upstream CA.
-- **EAB credentials are write-once per upstream account.** Rotating EAB credentials requires deleting the `upstream_accounts` row for that upstream and restarting.
+- **EAB credentials are write-once per upstream account.** Rotating EAB credentials requires deleting the `upstream_accounts` row for that upstream (`DELETE FROM upstream_accounts WHERE upstream_id = 'name' AND slot = 0`) and restarting.
 - **Profile names are operator-defined.** Document your gateway's profile vocabulary in internal runbooks.
 - **Nonces** expire after 10 minutes and are pruned on startup and every 15 minutes.
 - **Structured JSON logging.** Every order logs: `account_id`, `upstream_id`, `routing_signal`, `profile`, `upstream_profile`, `order_id`, `identifiers`, `status`, `duration_ms`.

@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Keep Go module dependencies current.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      # Batch all indirect dependency bumps into one PR to reduce noise.
+      indirect:
+        dependency-type: indirect
+
+  # Keep GitHub Actions pinned to latest versions.
+  # This also acts as the primary mitigation for mutable-tag supply-chain risk
+  # until each action is pinned to a commit SHA.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10

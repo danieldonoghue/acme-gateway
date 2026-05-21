@@ -747,7 +747,7 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	w.Write(chain) //nolint:errcheck
+	w.Write(chain) // #nosec G705 -- PEM cert chain from trusted upstream; response Content-Type is application/pem-certificate-chain, not text/html
 }
 
 // ─── POST /revoke-cert ────────────────────────────────────────────────────────

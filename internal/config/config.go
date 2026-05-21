@@ -204,6 +204,11 @@ func validate(cfg *Config) error {
 		if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
 			return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap is enabled")
 		}
+	} else {
+		// bootstrap.enabled: false means the operator provides the cert externally.
+		if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
+			return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap.enabled is false (externally-managed cert)")
+		}
 	}
 
 	return nil

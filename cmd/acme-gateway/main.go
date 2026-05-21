@@ -96,6 +96,24 @@ func run(cfgPath string, log *slog.Logger) error {
 		renewCtx, renewCancel := context.WithCancel(context.Background())
 		defer renewCancel()
 		mgr.StartRenewalLoop(renewCtx, tlsCert)
+	} else {
+		// Externally-managed certificate: load the keypair from disk once at
+		// startup. cert_path and key_path are validated by config.Load.
+		//
+		// NOTE: there is no live-reload for the external path. If an external
+		// renewer (cert-manager, Ansible cron, etc.) rewrites the files, the
+		// gateway must be restarted to pick up the new certificate. A future
+		// enhancement could add a SIGHUP handler or a periodic stat-and-reload
+		// loop using the same SetCertificate plumbing as the bootstrap renewal path.
+		tlsCert, err := tls.LoadX509KeyPair(cfg.Bootstrap.CertPath, cfg.Bootstrap.KeyPath)
+		if err != nil {
+			return fmt.Errorf("loading external TLS certificate: %w", err)
+		}
+		srv.SetCertificate(&tlsCert)
+		log.Info("external certificate loaded",
+			"cert_path", cfg.Bootstrap.CertPath,
+			"key_path", cfg.Bootstrap.KeyPath,
+		)
 	}
 
 	// ── Start background nonce pruner ─────────────────────────────────────────

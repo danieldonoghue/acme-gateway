@@ -94,7 +94,9 @@ eab:
 
 ## Bootstrap (gateway TLS certificate)
 
-When `bootstrap.enabled: true`, the gateway obtains its own TLS certificate on first start via dns-01 before opening the HTTPS listener. Set `bootstrap.enabled: false` to provide the certificate externally.
+When `bootstrap.enabled: true`, the gateway obtains its own TLS certificate on first start via dns-01 before opening the HTTPS listener and renews it automatically.
+
+Set `bootstrap.enabled: false` to provide the certificate externally (cert-manager, Ansible, manual). The gateway loads `cert_path`/`key_path` once at startup. **There is no live reload for the external path** — if the files are rewritten by an external renewer, the gateway must be restarted to serve the new certificate. A SIGHUP-triggered reload or mtime-polling loop is a planned future enhancement.
 
 ### DNS hook scripts
 

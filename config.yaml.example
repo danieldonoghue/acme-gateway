@@ -10,6 +10,13 @@ state:
   db_path: "/var/lib/acme-gateway/state.db"
 
 # Gateway TLS certificate — obtained automatically via dns-01 on first start.
+# Set enabled: true to use the built-in dns-01 bootstrap and 30-day renewal loop.
+# Set enabled: false to supply an externally-managed certificate (cert-manager,
+# Ansible cron, etc.). Both modes require cert_path and key_path.
+#
+# NOTE (enabled: false): the gateway loads the keypair once at startup and does
+# not reload it automatically. Restart the gateway after an external renewal to
+# serve the new certificate. SIGHUP-triggered live reload is a planned enhancement.
 bootstrap:
   enabled: true
   upstream: letsencrypt           # must match a key in the upstreams block

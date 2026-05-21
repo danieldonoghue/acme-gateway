@@ -19,7 +19,11 @@ var allowedAlgorithms = []jose.SignatureAlgorithm{
 	jose.ES256,
 	jose.ES384,
 	jose.ES512,
-	jose.EdDSA,
+	// EdDSA/Ed25519 is intentionally excluded: KeyTypeFromJWK does not map
+	// Ed25519 keys to a routing key_type, so an Ed25519 client would be able
+	// to parse the JWS but fail at account registration. Keeping the algorithm
+	// list consistent with what the rest of the stack supports avoids a
+	// confusing half-open door.
 }
 
 // rawJWS is used to extract the payload before go-jose parses it,

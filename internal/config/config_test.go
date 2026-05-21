@@ -27,6 +27,10 @@ server:
 state:
   db_path: "/tmp/test.db"
 
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+
 upstreams:
   letsencrypt:
     directory_url: "https://acme-v02.api.letsencrypt.org/directory"
@@ -69,6 +73,9 @@ server:
   base_url: "https://acme-gateway.internal"
 state:
   db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
 upstreams:
   le:
     directory_url: "https://acme-v02.api.letsencrypt.org/directory"
@@ -221,6 +228,9 @@ server:
   base_url: "https://acme-gateway.internal"
 state:
   db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
 upstreams:
   private-ca:
     directory_url: "https://acme.example.com/v2/acme/directory"

@@ -111,17 +111,37 @@ func (s *Store) migrate() error {
 	var slotExists int
 	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('upstream_accounts') WHERE name='slot'`).Scan(&slotExists) //nolint:errcheck
 	if slotExists == 0 {
-		s.db.Exec(`ALTER TABLE upstream_accounts RENAME TO upstream_accounts_v1`) //nolint:errcheck
-		s.db.Exec(`CREATE TABLE upstream_accounts (
+		// Wrap in a transaction so a crash mid-swap doesn't orphan data.
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning upstream_accounts migration: %w", err)
+		}
+		if _, err := tx.Exec(`ALTER TABLE upstream_accounts RENAME TO upstream_accounts_v1`); err != nil {
+			tx.Rollback() //nolint:errcheck
+			return fmt.Errorf("renaming upstream_accounts: %w", err)
+		}
+		if _, err := tx.Exec(`CREATE TABLE upstream_accounts (
   upstream_id TEXT    NOT NULL,
   slot        INTEGER NOT NULL DEFAULT 0,
   account_url TEXT    NOT NULL,
   private_key TEXT    NOT NULL,
   created_at  TEXT    NOT NULL,
   PRIMARY KEY (upstream_id, slot)
-)`) //nolint:errcheck
-		s.db.Exec(`INSERT OR IGNORE INTO upstream_accounts SELECT upstream_id,0,account_url,private_key,created_at FROM upstream_accounts_v1`) //nolint:errcheck
-		s.db.Exec(`DROP TABLE IF EXISTS upstream_accounts_v1`)                                                                                 //nolint:errcheck
+)`); err != nil {
+			tx.Rollback() //nolint:errcheck
+			return fmt.Errorf("creating upstream_accounts: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO upstream_accounts SELECT upstream_id,0,account_url,private_key,created_at FROM upstream_accounts_v1`); err != nil {
+			tx.Rollback() //nolint:errcheck
+			return fmt.Errorf("copying upstream_accounts data: %w", err)
+		}
+		if _, err := tx.Exec(`DROP TABLE upstream_accounts_v1`); err != nil {
+			tx.Rollback() //nolint:errcheck
+			return fmt.Errorf("dropping upstream_accounts_v1: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing upstream_accounts migration: %w", err)
+		}
 	}
 	return nil
 }

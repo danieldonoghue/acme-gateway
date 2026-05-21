@@ -321,7 +321,7 @@ func (c *Client) signedPost(ctx context.Context, url string, payload interface{}
 		// RFC 8555 §6.5: on badNonce, discard the used nonce and retry.
 		if resp.StatusCode == http.StatusBadRequest {
 			bodyBytes, _ := io.ReadAll(resp.Body) //nolint:errcheck
-			resp.Body.Close()
+			_ = resp.Body.Close()                 //nolint:gosec
 			var ae ACMEError
 			if jsonErr := json.Unmarshal(bodyBytes, &ae); jsonErr == nil &&
 				ae.Type == "urn:ietf:params:acme:error:badNonce" {

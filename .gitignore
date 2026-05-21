@@ -6,6 +6,9 @@
 .Spotlight-V100
 .Trashes
 
+# AI
+.claude/
+
 # VS Code
 .vscode/
 *.code-workspace

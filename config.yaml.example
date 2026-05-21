@@ -69,6 +69,14 @@ routing:
       upstream: letsencrypt
       upstream_profile: "tlsserver"
 
+    # Passthrough: forward the gateway profile name to the upstream unchanged.
+    # Use this when the upstream CA uses the same profile vocabulary as the gateway,
+    # so no translation is needed.
+    # - match:
+    #     profile: "custom-profile"
+    #   upstream: some-upstream
+    #   upstream_profile: "$passthrough"
+
     # Strip (default): private CA routing is via EAB credentials, no upstream profile needed.
     - match:
         profile: "tlsclient"

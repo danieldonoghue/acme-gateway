@@ -35,10 +35,11 @@ type Order struct {
 
 // ResourceMap maps a gateway-local UUID to an upstream URL.
 type ResourceMap struct {
-	GatewayID    string `json:"gatewayId"`
-	ResourceType string `json:"resourceType"` // "authz" | "challenge" | "finalize" | "cert"
-	OrderID      string `json:"orderId"`
-	UpstreamURL  string `json:"upstreamUrl"`
+	GatewayID       string `json:"gatewayId"`
+	ResourceType    string `json:"resourceType"` // "authz" | "challenge" | "finalize" | "cert"
+	OrderID         string `json:"orderId"`
+	UpstreamURL     string `json:"upstreamUrl"`
+	CertFingerprint string `json:"certFingerprint,omitempty"` // SHA-256 hex of leaf cert DER, populated lazily
 }
 
 // Nonce is a single-use replay-protection token.

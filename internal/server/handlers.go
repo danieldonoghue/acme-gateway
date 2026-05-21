@@ -1,8 +1,15 @@
 package server
 
 import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
@@ -719,6 +726,15 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cache the leaf-cert fingerprint so revocation can be routed to the correct upstream.
+	if rm.CertFingerprint == "" {
+		if fp, ok := leafCertFingerprint(chain); ok {
+			if err := h.store.UpdateResourceCertFingerprint(certID, fp); err != nil {
+				h.log.Warn("cert fingerprint cache: failed to write", "certID", certID, "err", err)
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
 	w.Write(chain) //nolint:errcheck
@@ -771,9 +787,31 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine which upstream holds this certificate by looking up in resource_map.
-	// Fall back to default upstream if not found.
+	// RFC 8555 §7.6: when using embedded JWK, verify it matches the certificate's subject public key.
+	if parsed.EmbeddedJWK != nil {
+		cert, cerr := x509.ParseCertificate(certDER)
+		if cerr != nil {
+			h.writeError(w, errMalformed("invalid certificate DER"))
+			return
+		}
+		if !jwkMatchesCertKey(parsed.EmbeddedJWK, cert) {
+			h.writeError(w, errUnauthorized("JWK does not match certificate public key"))
+			return
+		}
+	}
+
+	// Determine which upstream holds this certificate: look up by SHA-256 fingerprint
+	// (populated the first time /cert/{id} is fetched) and fall back to default upstream.
+	// Note: a cert whose /cert/{id} was never fetched will have a NULL fingerprint and
+	// route to the default upstream — acceptable for normal ACME clients, which always
+	// fetch the cert before they could revoke it.
 	upstreamID := h.cfg.Routing.DefaultUpstream
+	fp := hex.EncodeToString(sha256sum(certDER))
+	if certRM, err := h.store.GetResourceByCertFingerprint(fp); err == nil && certRM != nil {
+		if certOrder, err := h.store.GetOrder(certRM.OrderID); err == nil && certOrder != nil {
+			upstreamID = certOrder.UpstreamID
+		}
+	}
 	reason := -1
 	if req.Reason != nil {
 		reason = *req.Reason
@@ -876,8 +914,14 @@ func (h *Handler) buildOrderResponse(orderID string, upOrder *upstream.ACMEOrder
 		Certificate: certURL,
 	}
 
-	// Reconstruct authz list from resource_map (order is not guaranteed stable
-	// across multiple polls, so we omit them from poll responses as per spec).
+	// Populate authorizations per RFC 8555 §7.1.3.
+	authzRMs, err := h.store.GetAuthzResourcesByOrderID(orderID)
+	if err == nil {
+		for _, arm := range authzRMs {
+			resp.Authorizations = append(resp.Authorizations, h.cfg.Server.BaseURL+"/authz/"+arm.GatewayID)
+		}
+	}
+
 	return resp, nil
 }
 
@@ -898,4 +942,41 @@ func routingSignal(profile, keyType string, ids []model.Identifier) string {
 		}
 	}
 	return "default"
+}
+
+// leafCertFingerprint decodes the first PEM block from a PEM chain and returns
+// the SHA-256 hex fingerprint of its raw DER bytes (the leaf certificate).
+func leafCertFingerprint(pemChain []byte) (string, bool) {
+	block, _ := pem.Decode(pemChain)
+	if block == nil {
+		return "", false
+	}
+	return hex.EncodeToString(sha256sum(block.Bytes)), true
+}
+
+// sha256sum returns the SHA-256 digest of b as a byte slice.
+func sha256sum(b []byte) []byte {
+	h := sha256.Sum256(b)
+	return h[:]
+}
+
+// jwkMatchesCertKey reports whether jwk contains the same public key as cert.
+// Used by handleRevokeCert to enforce RFC 8555 §7.6 when revocation uses an embedded JWK.
+// Supports ECDSA, RSA, and Ed25519 (RFC 8555 §6.2 SHOULD support EdDSA).
+func jwkMatchesCertKey(jwk *jose.JSONWebKey, cert *x509.Certificate) bool {
+	switch certKey := cert.PublicKey.(type) {
+	case *ecdsa.PublicKey:
+		if k, ok := jwk.Key.(*ecdsa.PublicKey); ok {
+			return certKey.Equal(k)
+		}
+	case *rsa.PublicKey:
+		if k, ok := jwk.Key.(*rsa.PublicKey); ok {
+			return certKey.Equal(k)
+		}
+	case ed25519.PublicKey:
+		if k, ok := jwk.Key.(ed25519.PublicKey); ok {
+			return certKey.Equal(k)
+		}
+	}
+	return false
 }

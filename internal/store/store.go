@@ -77,10 +77,11 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 CREATE TABLE IF NOT EXISTS resource_map (
-  gateway_id    TEXT PRIMARY KEY,
-  resource_type TEXT NOT NULL,
-  order_id      TEXT NOT NULL,
-  upstream_url  TEXT NOT NULL,
+  gateway_id       TEXT PRIMARY KEY,
+  resource_type    TEXT NOT NULL,
+  order_id         TEXT NOT NULL,
+  upstream_url     TEXT NOT NULL,
+  cert_fingerprint TEXT,
   FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 
@@ -93,6 +94,10 @@ CREATE TABLE IF NOT EXISTS nonces (
 `
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	// Add cert_fingerprint to existing databases that predate this column.
+	s.db.Exec(`ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`) //nolint:errcheck
+	return nil
 }

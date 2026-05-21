@@ -13,8 +13,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/danieldonoghue/acme-gateway/internal/config"
@@ -107,15 +108,38 @@ func (m *Manager) acquire(ctx context.Context) error {
 		return fmt.Errorf("generating certificate key: %w", err)
 	}
 
-	// Create an upstream ACME client (fresh key for this bootstrap account).
-	client, err := upstream.New(m.upCfg.DirectoryURL, nil)
+	// Load or create a persistent ACME account key so renewals reuse the same account.
+	accountKey, err := m.loadOrCreateAccountKey()
+	if err != nil {
+		return fmt.Errorf("loading bootstrap account key: %w", err)
+	}
+
+	// Create an upstream ACME client using the persisted account key.
+	client, err := upstream.New(m.upCfg.DirectoryURL, accountKey)
 	if err != nil {
 		return fmt.Errorf("creating ACME client: %w", err)
 	}
 
-	// Register with the upstream CA.
-	if _, err := client.Register(ctx, m.upCfg.ContactEmail, m.upCfg.EAB); err != nil {
-		return fmt.Errorf("registering bootstrap account: %w", err)
+	// Reuse a saved account URL, or register and persist a new one.
+	// Guard: only use the saved URL if it looks like a valid URL; a corrupt/empty
+	// file would otherwise cause every upstream call to fail with KID errors.
+	accountURLPath := m.accountKeyPath() + ".url"
+	savedURL := ""
+	if data, err := os.ReadFile(accountURLPath); err == nil {
+		if u := strings.TrimSpace(string(data)); strings.HasPrefix(u, "http") {
+			savedURL = u
+		}
+	}
+	if savedURL != "" {
+		client.SetAccountURL(savedURL)
+	} else {
+		accountURL, err := client.Register(ctx, m.upCfg.ContactEmail, m.upCfg.EAB)
+		if err != nil {
+			return fmt.Errorf("registering bootstrap account: %w", err)
+		}
+		if err := atomicWrite(accountURLPath, []byte(accountURL), 0600); err != nil {
+			m.log.Warn("bootstrap: could not persist account URL", "err", err)
+		}
 	}
 
 	// Submit order.
@@ -274,8 +298,6 @@ func buildCSR(key *ecdsa.PrivateKey, domain string) ([]byte, error) {
 		Subject:  pkix.Name{CommonName: domain},
 		DNSNames: []string{domain},
 	}
-	// Assign a dummy serial number to satisfy the template (not used in CSR).
-	_ = big.NewInt(1)
 	return x509.CreateCertificateRequest(rand.Reader, tpl, key)
 }
 
@@ -351,4 +373,37 @@ func pollOrder(ctx context.Context, client *upstream.Client, orderURL string) er
 		}
 	}
 	return fmt.Errorf("order did not become valid within timeout")
+}
+
+// accountKeyPath returns the path where the bootstrap ACME account key is stored,
+// placed adjacent to the gateway certificate key file.
+func (m *Manager) accountKeyPath() string {
+	return filepath.Join(filepath.Dir(m.cfg.KeyPath), "bootstrap-account.key")
+}
+
+// loadOrCreateAccountKey loads the bootstrap ACME account key from disk.
+// If no key file exists, a new P-256 key is generated and persisted.
+func (m *Manager) loadOrCreateAccountKey() (*ecdsa.PrivateKey, error) {
+	path := m.accountKeyPath()
+	if data, err := os.ReadFile(path); err == nil {
+		block, _ := pem.Decode(data)
+		if block != nil {
+			if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+				return key, nil
+			}
+		}
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generating bootstrap account key: %w", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling bootstrap account key: %w", err)
+	}
+	pemData := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	if err := atomicWrite(path, pemData, 0600); err != nil {
+		return nil, fmt.Errorf("writing bootstrap account key: %w", err)
+	}
+	return key, nil
 }

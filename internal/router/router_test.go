@@ -19,54 +19,54 @@ func makeRouter(rules []config.RoutingRule, defaultUpstream string) *Router {
 func TestRoute_ProfileMatch(t *testing.T) {
 	r := makeRouter([]config.RoutingRule{
 		{Match: config.MatchConfig{Profile: "tlsserver"}, Upstream: "letsencrypt"},
-		{Match: config.MatchConfig{Profile: "tlsclient"}, Upstream: "digicert"},
+		{Match: config.MatchConfig{Profile: "tlsclient"}, Upstream: "private-ca"},
 	}, "letsencrypt")
 
 	d := r.Route(&Request{Profile: "tlsclient", KeyType: "RSA"})
-	if d.UpstreamID != "digicert" {
-		t.Errorf("upstream = %q, want digicert", d.UpstreamID)
+	if d.UpstreamID != "private-ca" {
+		t.Errorf("upstream = %q, want private-ca", d.UpstreamID)
 	}
 }
 
 func TestRoute_ProfileAndKeyType(t *testing.T) {
 	r := makeRouter([]config.RoutingRule{
-		{Match: config.MatchConfig{Profile: "tlsclient", KeyType: "RSA"}, Upstream: "digicert-rsa"},
-		{Match: config.MatchConfig{Profile: "tlsclient", KeyType: "ECDSA"}, Upstream: "digicert-ecdsa"},
+		{Match: config.MatchConfig{Profile: "tlsclient", KeyType: "RSA"}, Upstream: "private-ca-rsa"},
+		{Match: config.MatchConfig{Profile: "tlsclient", KeyType: "ECDSA"}, Upstream: "private-ca-ecdsa"},
 	}, "letsencrypt")
 
 	d := r.Route(&Request{Profile: "tlsclient", KeyType: "ECDSA"})
-	if d.UpstreamID != "digicert-ecdsa" {
-		t.Errorf("upstream = %q, want digicert-ecdsa", d.UpstreamID)
+	if d.UpstreamID != "private-ca-ecdsa" {
+		t.Errorf("upstream = %q, want private-ca-ecdsa", d.UpstreamID)
 	}
 }
 
 func TestRoute_KeyTypeCaseInsensitive(t *testing.T) {
 	r := makeRouter([]config.RoutingRule{
-		{Match: config.MatchConfig{KeyType: "RSA"}, Upstream: "digicert-rsa"},
+		{Match: config.MatchConfig{KeyType: "RSA"}, Upstream: "private-ca-rsa"},
 	}, "letsencrypt")
 
 	d := r.Route(&Request{KeyType: "rsa"})
-	if d.UpstreamID != "digicert-rsa" {
-		t.Errorf("upstream = %q, want digicert-rsa", d.UpstreamID)
+	if d.UpstreamID != "private-ca-rsa" {
+		t.Errorf("upstream = %q, want private-ca-rsa", d.UpstreamID)
 	}
 }
 
 func TestRoute_DomainSuffix(t *testing.T) {
 	r := makeRouter([]config.RoutingRule{
-		{Match: config.MatchConfig{DomainSuffix: ".internal"}, Upstream: "digicert-rsa"},
+		{Match: config.MatchConfig{DomainSuffix: ".internal"}, Upstream: "private-ca-rsa"},
 	}, "letsencrypt")
 
 	d := r.Route(&Request{
 		Identifiers: []model.Identifier{{Type: "dns", Value: "myhost.internal"}},
 	})
-	if d.UpstreamID != "digicert-rsa" {
-		t.Errorf("upstream = %q, want digicert-rsa", d.UpstreamID)
+	if d.UpstreamID != "private-ca-rsa" {
+		t.Errorf("upstream = %q, want private-ca-rsa", d.UpstreamID)
 	}
 }
 
 func TestRoute_DomainSuffixNoMatch(t *testing.T) {
 	r := makeRouter([]config.RoutingRule{
-		{Match: config.MatchConfig{DomainSuffix: ".internal"}, Upstream: "digicert-rsa"},
+		{Match: config.MatchConfig{DomainSuffix: ".internal"}, Upstream: "private-ca-rsa"},
 	}, "letsencrypt")
 
 	d := r.Route(&Request{
@@ -91,7 +91,7 @@ func TestRoute_FirstMatchWins(t *testing.T) {
 
 func TestRoute_Default(t *testing.T) {
 	r := makeRouter([]config.RoutingRule{
-		{Match: config.MatchConfig{Profile: "tlsclient"}, Upstream: "digicert"},
+		{Match: config.MatchConfig{Profile: "tlsclient"}, Upstream: "private-ca"},
 	}, "letsencrypt")
 
 	d := r.Route(&Request{Profile: "other"})

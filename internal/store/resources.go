@@ -21,7 +21,7 @@ func (s *Store) SaveResource(r *model.ResourceMap) error {
 // Returns nil, nil if not found.
 func (s *Store) GetResource(gatewayID string) (*model.ResourceMap, error) {
 	row := s.db.QueryRow(
-		`SELECT gateway_id, resource_type, order_id, upstream_url
+		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
 		 FROM resource_map WHERE gateway_id = ?`, gatewayID,
 	)
 	return scanResource(row)
@@ -31,19 +31,69 @@ func (s *Store) GetResource(gatewayID string) (*model.ResourceMap, error) {
 // Returns nil, nil if not found.
 func (s *Store) GetResourceByUpstreamURL(upstreamURL string) (*model.ResourceMap, error) {
 	row := s.db.QueryRow(
-		`SELECT gateway_id, resource_type, order_id, upstream_url
+		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
 		 FROM resource_map WHERE upstream_url = ?`, upstreamURL,
 	)
 	return scanResource(row)
 }
 
+// GetResourceByCertFingerprint retrieves a cert resource mapping by the SHA-256 fingerprint
+// of the leaf certificate DER. Returns nil, nil if not found.
+func (s *Store) GetResourceByCertFingerprint(fingerprint string) (*model.ResourceMap, error) {
+	row := s.db.QueryRow(
+		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
+		 FROM resource_map WHERE cert_fingerprint = ?`, fingerprint,
+	)
+	return scanResource(row)
+}
+
+// GetAuthzResourcesByOrderID returns all authorization resource mappings for an order.
+func (s *Store) GetAuthzResourcesByOrderID(orderID string) ([]*model.ResourceMap, error) {
+	rows, err := s.db.Query(
+		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
+		 FROM resource_map WHERE order_id = ? AND resource_type = ?`,
+		orderID, model.ResourceTypeAuthz,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.ResourceMap
+	for rows.Next() {
+		var r model.ResourceMap
+		var fp sql.NullString
+		if err := rows.Scan(&r.GatewayID, &r.ResourceType, &r.OrderID, &r.UpstreamURL, &fp); err != nil {
+			return nil, err
+		}
+		if fp.Valid {
+			r.CertFingerprint = fp.String
+		}
+		result = append(result, &r)
+	}
+	return result, rows.Err()
+}
+
+// UpdateResourceCertFingerprint stores the SHA-256 hex fingerprint of the leaf certificate
+// against a cert resource entry, enabling revocation routing.
+func (s *Store) UpdateResourceCertFingerprint(gatewayID, fingerprint string) error {
+	_, err := s.db.Exec(
+		`UPDATE resource_map SET cert_fingerprint = ? WHERE gateway_id = ?`,
+		fingerprint, gatewayID,
+	)
+	return err
+}
+
 func scanResource(row *sql.Row) (*model.ResourceMap, error) {
 	var r model.ResourceMap
-	if err := row.Scan(&r.GatewayID, &r.ResourceType, &r.OrderID, &r.UpstreamURL); err != nil {
+	var fp sql.NullString
+	if err := row.Scan(&r.GatewayID, &r.ResourceType, &r.OrderID, &r.UpstreamURL, &fp); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if fp.Valid {
+		r.CertFingerprint = fp.String
 	}
 	return &r, nil
 }

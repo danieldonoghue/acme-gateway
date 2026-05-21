@@ -213,8 +213,8 @@ func TestLoad_FileNotFound(t *testing.T) {
 }
 
 func TestLoad_EABConfig(t *testing.T) {
-	t.Setenv("DIGICERT_KID", "kid-value")
-	t.Setenv("DIGICERT_HMAC", "hmac-value")
+	t.Setenv("PRIVATE_CA_KID", "kid-value")
+	t.Setenv("PRIVATE_CA_HMAC", "hmac-value")
 
 	cfg := `
 server:
@@ -222,21 +222,21 @@ server:
 state:
   db_path: "/tmp/test.db"
 upstreams:
-  digicert:
-    directory_url: "https://acme.digicert.com/v2/acme/directory"
+  private-ca:
+    directory_url: "https://acme.example.com/v2/acme/directory"
     contact_email: "admin@example.com"
     eab:
-      key_id: "${DIGICERT_KID}"
-      hmac_key: "${DIGICERT_HMAC}"
+      key_id: "${PRIVATE_CA_KID}"
+      hmac_key: "${PRIVATE_CA_HMAC}"
 routing:
-  default_upstream: digicert
+  default_upstream: private-ca
 `
 	path := writeTemp(t, cfg)
 	got, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	dc := got.Upstreams["digicert"]
+	dc := got.Upstreams["private-ca"]
 	if dc.EAB == nil {
 		t.Fatal("EAB config should not be nil")
 	}

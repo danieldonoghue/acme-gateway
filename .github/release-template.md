@@ -19,7 +19,7 @@ sudo install -m 0755 acme-gateway_%%VERSION%%_linux_amd64/acme-gateway /usr/loca
 sudo dpkg -i acme-gateway_%%DEB_VERSION%%_debian12_amd64.deb
 ```
 
-The package installs the binary to `/usr/local/bin/acme-gateway`, drops a config skeleton at `/etc/acme-gateway/config.yaml`, creates the `acme-gateway` system user, and registers a systemd unit.
+The package installs the binary to `/usr/local/bin/acme-gateway`, drops a config example at `/etc/acme-gateway/config.yaml.example`, creates the `acme-gateway` system user, and registers a systemd unit.
 
 ---
 

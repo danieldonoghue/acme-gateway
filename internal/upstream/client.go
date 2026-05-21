@@ -291,8 +291,15 @@ func (c *Client) saveNonce(n string) {
 
 // signedPost makes a JWS-signed POST to the upstream CA.
 // payload == nil means POST-as-GET (empty string payload per RFC 8555).
-// Per RFC 8555 §6.5, a badNonce response is retried once with a fresh nonce.
+// Per RFC 8555 §6.5, a badNonce response is retried with a fresh nonce;
+// at most maxAttempts attempts are made (up to maxAttempts-1 retries).
 func (c *Client) signedPost(ctx context.Context, url string, payload interface{}) (*http.Response, error) {
+	return c.signedPostWithHeaders(ctx, url, payload, nil)
+}
+
+// signedPostWithHeaders is like signedPost but merges extraHeaders onto every
+// outgoing request before it is sent (e.g. Accept for certificate download).
+func (c *Client) signedPostWithHeaders(ctx context.Context, url string, payload interface{}, extraHeaders map[string]string) (*http.Response, error) {
 	const maxAttempts = 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		nonce, err := c.getNonce(ctx)
@@ -310,6 +317,9 @@ func (c *Client) signedPost(ctx context.Context, url string, payload interface{}
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/jose+json")
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
+		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

@@ -23,6 +23,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -107,8 +108,19 @@ func runTests(m *testing.M) int {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// Resolve the container ID via compose so we are not coupled to the
+	// generated name (which varies with COMPOSE_PROJECT_NAME, working dir, etc.).
+	psOut, err := exec.CommandContext(context.Background(),
+		"docker", "compose", "-f", "docker-compose.yml", "ps", "-q", "pebble",
+	).Output()
+	if err != nil || len(bytes.TrimSpace(psOut)) == 0 {
+		fmt.Fprintf(os.Stderr, "resolving pebble container ID: %v\n", err)
+		return 1
+	}
+	pebbleContainerID := string(bytes.TrimSpace(psOut))
+
 	pebbleTLSCAFile := filepath.Join(tmpDir, "pebble-tls-ca.pem")
-	cpCmd := exec.Command("docker", "cp", "e2e-pebble-1:/test/certs/pebble.minica.pem", pebbleTLSCAFile)
+	cpCmd := exec.Command("docker", "cp", pebbleContainerID+":/test/certs/pebble.minica.pem", pebbleTLSCAFile)
 	cpCmd.Stdout = os.Stderr
 	cpCmd.Stderr = os.Stderr
 	if err := cpCmd.Run(); err != nil {

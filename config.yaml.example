@@ -40,6 +40,7 @@ upstreams:
     # provides comfortable headroom. Not compatible with EAB upstreams.
     account_count: 3
     # No EAB required for Let's Encrypt.
+    # ca_cert_path is not needed for public CAs with well-known roots.
 
   # For LE staging tests, replace with:
   # letsencrypt:
@@ -49,6 +50,7 @@ upstreams:
   private-ca-rsa:
     directory_url: "https://acme.your-private-ca.example/directory"
     contact_email: "certadmin@example.com"
+    # ca_cert_path: "/etc/acme-gateway/private-ca.pem"  # PEM CA cert to trust for TLS to this upstream
     eab:
       key_id:   "${PRIVATE_CA_RSA_EAB_KID}"
       hmac_key: "${PRIVATE_CA_RSA_EAB_HMAC}"
@@ -56,6 +58,7 @@ upstreams:
   private-ca-ecdsa:
     directory_url: "https://acme.your-private-ca.example/directory"
     contact_email: "certadmin@example.com"
+    # ca_cert_path: "/etc/acme-gateway/private-ca.pem"
     eab:
       key_id:   "${PRIVATE_CA_ECDSA_EAB_KID}"
       hmac_key: "${PRIVATE_CA_ECDSA_EAB_HMAC}"

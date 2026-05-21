@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -74,6 +75,36 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return s.httpServer.Shutdown(ctx)
+}
+
+// ServeListener starts the HTTPS server on an already-bound listener.
+// Intended for tests that need to know the bound port before starting (e.g.
+// by passing a net.Listener from net.Listen("tcp", "127.0.0.1:0")).
+func (s *Server) ServeListener(ln net.Listener) error {
+	mux := s.buildRouter()
+
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			s.certMu.RLock()
+			cert := s.tlsCert
+			s.certMu.RUnlock()
+			if cert == nil {
+				return nil, fmt.Errorf("no TLS certificate loaded")
+			}
+			return cert, nil
+		},
+	}
+
+	s.httpServer = &http.Server{
+		Handler:      mux,
+		TLSConfig:    tlsCfg,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 90 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	s.log.Info("HTTPS listener starting", "addr", ln.Addr())
+	return s.httpServer.ServeTLS(ln, "", "")
 }
 
 // buildRouter wires up all ACME endpoints per RFC 8555.

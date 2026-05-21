@@ -10,6 +10,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -126,6 +128,46 @@ func NewFromPEM(directoryURL string, keyPEM []byte) (*Client, error) {
 		return nil, err
 	}
 	return New(directoryURL, key)
+}
+
+// NewWithHTTPClient creates a Client with a custom *http.Client.
+// Use this when the upstream CA uses a non-standard CA certificate (e.g. Pebble
+// in test environments, or a private CA). Pass nil to use the default client.
+func NewWithHTTPClient(directoryURL string, key *ecdsa.PrivateKey, httpClient *http.Client) (*Client, error) {
+	c, err := New(directoryURL, key)
+	if err != nil {
+		return nil, err
+	}
+	if httpClient != nil {
+		c.httpClient = httpClient
+	}
+	return c, nil
+}
+
+// HTTPClientWithCACert returns an *http.Client whose TLS trust pool includes
+// the PEM-encoded certificate at caCertPath appended to the system pool.
+// Use this for private CA upstreams or Pebble in test/dev environments.
+func HTTPClientWithCACert(caCertPath string) (*http.Client, error) {
+	pemBytes, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading CA cert %q: %w", caCertPath, err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("no valid certificates found in %q", caCertPath)
+	}
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				RootCAs:    pool,
+			},
+		},
+	}, nil
 }
 
 // SetAccountURL sets the upstream account URL (after registration).

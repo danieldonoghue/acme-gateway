@@ -77,6 +77,21 @@ upstreams:
 
 `account_count` is only valid for upstreams without EAB (each ACME account requires its own unique EAB credential; for EAB upstreams configure separate upstream entries instead). Defaults to 1.
 
+**Private CA TLS trust (`ca_cert_path`)** — By default, the gateway uses the system certificate pool when connecting to upstream ACME directories. If your upstream CA presents a TLS certificate signed by a private root (common for internal CAs and for Pebble in test environments), provide the CA certificate in PEM format:
+
+```yaml
+upstreams:
+  private-ca:
+    directory_url: "https://acme.your-private-ca.example/directory"
+    contact_email: "certadmin@example.com"
+    ca_cert_path: "/etc/acme-gateway/private-ca.pem"  # appended to system pool
+    eab:
+      key_id:   "${PRIVATE_CA_EAB_KID}"
+      hmac_key: "${PRIVATE_CA_EAB_HMAC}"
+```
+
+The certificate at `ca_cert_path` is added **in addition to** the system pool, so standard public CAs still work. The file is read once at startup; restart the gateway if the CA certificate is rotated.
+
 **Routing signals** — Evaluated in priority order within each rule (all conditions ANDed):
 1. `profile` — from `--preferred-profile` / `--required-profile` in Certbot 4.0+
 2. `key_type` — RSA or ECDSA, detected from the account's registered public key

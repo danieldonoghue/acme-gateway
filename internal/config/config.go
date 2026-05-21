@@ -71,6 +71,10 @@ type UpstreamConfig struct {
 	// Requires no EAB; EAB upstreams need one credential set per account and
 	// should instead be configured as separate upstream entries. Defaults to 1.
 	AccountCount int `yaml:"account_count,omitempty"`
+	// CACertPath is an optional path to a PEM file containing a CA certificate
+	// to add to the TLS trust pool for connections to this upstream.
+	// Useful for private CAs and for Pebble in development/test environments.
+	CACertPath string `yaml:"ca_cert_path,omitempty"`
 }
 
 // RoutingConfig holds the ordered list of routing rules and the default upstream.

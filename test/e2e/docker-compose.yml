@@ -1,0 +1,19 @@
+# Pebble: Let's Encrypt's lightweight ACME CA for integration testing.
+#
+# PEBBLE_VA_ALWAYS_VALID=1 skips actual HTTP/DNS challenge validation so tests
+# can exercise the full ACME protocol flow without a real public endpoint.
+# Never use this mode against any environment other than local testing.
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    ports:
+      - "14000:14000"  # ACME directory (TLS)
+      - "15000:15000"  # Management API – root CA cert available at /roots/0
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_VA_ALWAYS_VALID: "1"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://localhost:15000/roots/0"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

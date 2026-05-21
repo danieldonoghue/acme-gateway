@@ -182,7 +182,16 @@ func (p *Pool) getOrCreateAll(ctx context.Context, upstreamID string) ([]*Client
 			}
 		}
 
-		client, err := New(upCfg.DirectoryURL, key)
+		var client *Client
+		if upCfg.CACertPath != "" {
+			hc, caErr := HTTPClientWithCACert(upCfg.CACertPath)
+			if caErr != nil {
+				return nil, fmt.Errorf("loading CA cert for upstream %q: %w", upstreamID, caErr)
+			}
+			client, err = NewWithHTTPClient(upCfg.DirectoryURL, key, hc)
+		} else {
+			client, err = New(upCfg.DirectoryURL, key)
+		}
 		if err != nil {
 			return nil, err
 		}

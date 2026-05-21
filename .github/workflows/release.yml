@@ -22,6 +22,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # E2E tests require Docker + Pebble; excluded here intentionally (no -tags e2e).
       - run: go test -race -count=1 ./...
       - run: go vet ./...
 

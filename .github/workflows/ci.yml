@@ -47,6 +47,9 @@ jobs:
           cache: true
 
       - name: go test
+        # E2E tests (test/e2e/) require Docker + Pebble and carry the
+        # //go:build e2e tag. Omitting -tags e2e here intentionally excludes
+        # them; run 'make test-e2e' locally before merging ACME-flow changes.
         run: go test -race -count=1 -timeout 120s -coverprofile=coverage.out ./...
 
       - name: go vet

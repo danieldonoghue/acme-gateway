@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"testing"
 
 	"github.com/go-jose/go-jose/v4"
@@ -205,5 +206,93 @@ func TestKeyTypeFromJWK(t *testing.T) {
 	}
 	if kt != "ECDSA" {
 		t.Errorf("expected ECDSA, got %q", kt)
+	}
+}
+
+func TestKeyTypeFromJWK_RSA(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwk := &jose.JSONWebKey{Key: rsaKey.Public()}
+	kt, err := KeyTypeFromJWK(jwk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kt != "RSA" {
+		t.Errorf("expected RSA, got %q", kt)
+	}
+}
+
+// unsupportedKeyType is not RSA or ECDSA, used to exercise default/error branches.
+type unsupportedKeyType struct{}
+
+func TestKeyTypeFromJWK_Unsupported(t *testing.T) {
+	// An unknown key type hits the default branch.
+	jwk := &jose.JSONWebKey{Key: unsupportedKeyType{}}
+	_, err := KeyTypeFromJWK(jwk)
+	if err == nil {
+		t.Fatal("expected error for unsupported key type")
+	}
+}
+
+func TestJWKThumbprint_ErrorPath(t *testing.T) {
+	// A JWK with an unsupported key type causes Thumbprint to fail.
+	jwk := &jose.JSONWebKey{Key: unsupportedKeyType{}}
+	_, err := JWKThumbprint(jwk)
+	if err == nil {
+		t.Fatal("expected error computing thumbprint of unsupported key type")
+	}
+}
+
+func TestParseJWS_InvalidJSON(t *testing.T) {
+	_, err := ParseJWS([]byte("not-json"))
+	if err == nil {
+		t.Fatal("expected error for non-JSON body")
+	}
+}
+
+func TestParseJWS_NeitherJWKNorKID(t *testing.T) {
+	key := newTestKey(t)
+	sigKey := jose.SigningKey{Algorithm: jose.ES256, Key: key}
+	opts := &jose.SignerOptions{}
+	opts.WithHeader(jose.HeaderKey("nonce"), "nonce-x")
+	opts.WithHeader(jose.HeaderKey("url"), "https://gw/new-account")
+	// Intentionally omit both jwk and kid.
+	signer, err := jose.NewSigner(sigKey, opts)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	jws, err := signer.Sign([]byte("{}"))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	_, parseErr := ParseJWS([]byte(jws.FullSerialize()))
+	if parseErr == nil {
+		t.Fatal("expected error for JWS with neither jwk nor kid")
+	}
+}
+
+func TestParseJWS_BothJWKAndKID(t *testing.T) {
+	key := newTestKey(t)
+	sigKey := jose.SigningKey{Algorithm: jose.ES256, Key: key}
+	opts := &jose.SignerOptions{}
+	opts.WithHeader(jose.HeaderKey("nonce"), "nonce-y")
+	opts.WithHeader(jose.HeaderKey("url"), "https://gw/new-account")
+	// Set both jwk and kid — invalid per RFC 8555.
+	jwk := jose.JSONWebKey{Key: key.Public(), Algorithm: string(jose.ES256), Use: "sig"}
+	opts.WithHeader(jose.HeaderKey("jwk"), jwk)
+	opts.WithHeader(jose.HeaderKey("kid"), "https://gw/account/123")
+	signer, err := jose.NewSigner(sigKey, opts)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	jws, err := signer.Sign([]byte("{}"))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	_, parseErr := ParseJWS([]byte(jws.FullSerialize()))
+	if parseErr == nil {
+		t.Fatal("expected error for JWS with both jwk and kid")
 	}
 }

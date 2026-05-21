@@ -257,3 +257,231 @@ routing:
 		t.Errorf("EAB.HMACKey = %q, want %q", dc.EAB.HMACKey, "hmac-value")
 	}
 }
+
+func TestLoad_NoUpstreams(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for missing upstreams block")
+	}
+}
+
+func TestLoad_UpstreamMissingDirectoryURL(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    contact_email: "admin@example.com"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for upstream missing directory_url")
+	}
+}
+
+func TestLoad_AccountCountWithEAB(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  private-ca:
+    directory_url: "https://acme.example.com/directory"
+    account_count: 3
+    eab:
+      key_id: "kid"
+      hmac_key: "hmac"
+routing:
+  default_upstream: private-ca
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for account_count > 1 combined with EAB")
+	}
+}
+
+func TestLoad_RuleMissingUpstream(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  rules:
+    - match:
+        key_type: "RSA"
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for routing rule missing upstream")
+	}
+}
+
+func TestLoad_DefaultUpstreamNotFound(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: nonexistent
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for default_upstream not found in upstreams")
+	}
+}
+
+func TestLoad_Bootstrap_Enabled_MissingUpstream(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  enabled: true
+  domain: "gw.example.com"
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for bootstrap.enabled=true with missing upstream field")
+	}
+}
+
+func TestLoad_Bootstrap_Enabled_UnknownUpstream(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  enabled: true
+  upstream: nonexistent
+  domain: "gw.example.com"
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for bootstrap.upstream not found in upstreams")
+	}
+}
+
+func TestLoad_Bootstrap_Enabled_MissingDomain(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  enabled: true
+  upstream: le
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for bootstrap.enabled=true with missing domain")
+	}
+}
+
+func TestLoad_Bootstrap_Enabled_MissingCertPaths(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  enabled: true
+  upstream: le
+  domain: "gw.example.com"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for bootstrap.enabled=true with missing cert_path/key_path")
+	}
+}
+
+func TestLoad_Bootstrap_Disabled_MissingCertPaths(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  enabled: false
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for bootstrap.enabled=false with missing cert_path/key_path")
+	}
+}

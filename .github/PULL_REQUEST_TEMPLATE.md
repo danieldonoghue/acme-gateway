@@ -16,7 +16,8 @@
 
 ## Checklist
 
-- [ ] Tests pass
+- [ ] Tests pass (`make test`)
 - [ ] New behaviour is tested
 - [ ] `config.yaml.example` updated if config changed
 - [ ] `README.md` updated if behaviour changed
+- [ ] E2E tests run locally (`make test-e2e`) — required if ACME protocol flow, upstream client, or routing logic was modified

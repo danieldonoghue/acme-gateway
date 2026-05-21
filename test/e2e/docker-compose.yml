@@ -12,8 +12,3 @@ services:
     environment:
       PEBBLE_VA_NOSLEEP: "1"
       PEBBLE_VA_ALWAYS_VALID: "1"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://localhost:15000/roots/0"]
-      interval: 2s
-      timeout: 3s
-      retries: 15

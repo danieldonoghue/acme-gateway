@@ -132,14 +132,12 @@ func (c *Client) FinalizeOrder(ctx context.Context, finalizeURL string, csrDER [
 }
 
 // FetchCertificate downloads the PEM certificate chain from the upstream cert URL.
+// RFC 8555 §7.4.2: certificate download uses POST-as-GET (nil payload).
+// The Accept header requests PEM format; some CAs serve multiple representations.
 func (c *Client) FetchCertificate(ctx context.Context, certURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, certURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/pem-certificate-chain")
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.signedPostWithHeaders(ctx, certURL, nil, map[string]string{
+		"Accept": "application/pem-certificate-chain",
+	})
 	if err != nil {
 		return nil, fmt.Errorf("fetching certificate: %w", err)
 	}

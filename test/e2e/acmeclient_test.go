@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -267,12 +268,15 @@ func (c *acmeClient) pollOrder(t *testing.T, orderURL string) acmeOrder {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		resp := c.post(t, orderURL, nil) // POST-as-GET
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("pollOrder: unexpected status %d: %s", resp.StatusCode, body)
+		}
 		var order acmeOrder
-		if err := json.NewDecoder(resp.Body).Decode(&order); err != nil {
-			resp.Body.Close()
+		if err := json.Unmarshal(body, &order); err != nil {
 			t.Fatalf("decode order: %v", err)
 		}
-		resp.Body.Close()
 
 		if order.Status != "pending" && order.Status != "processing" {
 			return order
@@ -302,9 +306,11 @@ func (c *acmeClient) finalize(t *testing.T, finalizeURL, orderURL, domain string
 		t.Fatalf("create CSR: %v", err)
 	}
 
-	// RFC 8555 §7.4: csr field is the base64url-encoded DER, without PEM wrapping.
+	// RFC 8555 §7.4: csr field is the base64url-encoded DER, without PEM wrapping
+	// or padding. json.Marshal encodes []byte as standard base64, so we must
+	// pre-encode as a string using RawURLEncoding.
 	resp := c.post(t, finalizeURL, map[string]interface{}{
-		"csr": csrDER, // go-jose will base64url-encode bytes
+		"csr": base64.RawURLEncoding.EncodeToString(csrDER),
 	})
 	defer resp.Body.Close()
 

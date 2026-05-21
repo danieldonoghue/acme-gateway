@@ -291,30 +291,48 @@ func (c *Client) saveNonce(n string) {
 
 // signedPost makes a JWS-signed POST to the upstream CA.
 // payload == nil means POST-as-GET (empty string payload per RFC 8555).
+// Per RFC 8555 §6.5, a badNonce response is retried once with a fresh nonce.
 func (c *Client) signedPost(ctx context.Context, url string, payload interface{}) (*http.Response, error) {
-	nonce, err := c.getNonce(ctx)
-	if err != nil {
-		return nil, err
-	}
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		nonce, err := c.getNonce(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	body, err := c.buildJWS(nonce, url, payload)
-	if err != nil {
-		return nil, err
-	}
+		body, err := c.buildJWS(nonce, url, payload)
+		if err != nil {
+			return nil, err
+		}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/jose+json")
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/jose+json")
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
 
-	c.saveNonce(resp.Header.Get("Replay-Nonce"))
-	return resp, nil
+		c.saveNonce(resp.Header.Get("Replay-Nonce"))
+
+		// RFC 8555 §6.5: on badNonce, discard the used nonce and retry.
+		if resp.StatusCode == http.StatusBadRequest {
+			bodyBytes, _ := io.ReadAll(resp.Body) //nolint:errcheck
+			resp.Body.Close()
+			var ae ACMEError
+			if jsonErr := json.Unmarshal(bodyBytes, &ae); jsonErr == nil &&
+				ae.Type == "urn:ietf:params:acme:error:badNonce" {
+				continue // retry with fresh nonce
+			}
+			// Not a badNonce — reconstitute the body and return.
+			resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+		return resp, nil
+	}
+	return nil, fmt.Errorf("upstream rejected nonce after %d attempts", maxAttempts)
 }
 
 // buildJWS serialises a JWS-signed request body.

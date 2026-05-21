@@ -75,7 +75,7 @@ func runTests(m *testing.M) int {
 
 	// ── Start Pebble ──────────────────────────────────────────────────────────
 	composeDir := "."
-	up := exec.Command("docker", "compose", "-f", "docker-compose.yml", "up", "-d", "--wait")
+	up := exec.Command("docker", "compose", "-f", "docker-compose.yml", "up", "-d")
 	up.Dir = composeDir
 	up.Stdout = os.Stderr
 	up.Stderr = os.Stderr
@@ -89,20 +89,32 @@ func runTests(m *testing.M) int {
 		down.Run() //nolint:errcheck,gosec
 	}()
 
-	// ── Fetch Pebble root CA ─────────────────────────────────────────────────
+	// ── Fetch Pebble root CA (for verifying issued certificates) ────────────
 	pebbleCAPool, pebbleCAPEM := waitForPebbleCA()
 	if pebbleCAPool == nil {
 		fmt.Fprintln(os.Stderr, "timed out waiting for Pebble CA cert")
 		return 1
 	}
 
-	// ── Write Pebble CA to a temp file so the gateway can trust it ───────────
+	// ── Extract Pebble's TLS server cert (minica root CA for port 14000) ────
+	// Pebble's ACME endpoint (port 14000) is served with a minica-signed TLS
+	// cert that is distinct from the ACME issuance CA. Copy the root from the
+	// well-known path inside the container so the gateway can trust it.
 	tmpDir, err := os.MkdirTemp("", "acme-gateway-e2e-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mkdirtemp: %v\n", err)
 		return 1
 	}
 	defer os.RemoveAll(tmpDir)
+
+	pebbleTLSCAFile := filepath.Join(tmpDir, "pebble-tls-ca.pem")
+	cpCmd := exec.Command("docker", "cp", "e2e-pebble-1:/test/certs/pebble.minica.pem", pebbleTLSCAFile)
+	cpCmd.Stdout = os.Stderr
+	cpCmd.Stderr = os.Stderr
+	if err := cpCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "docker cp pebble TLS CA: %v\n", err)
+		return 1
+	}
 
 	pebbleCAFile := filepath.Join(tmpDir, "pebble-ca.pem")
 	if err := os.WriteFile(pebbleCAFile, pebbleCAPEM, 0600); err != nil {
@@ -113,6 +125,7 @@ func runTests(m *testing.M) int {
 	// ── Build and stash the shared harness state ─────────────────────────────
 	sharedPebbleCAPool = pebbleCAPool
 	sharedPebbleCAFile = pebbleCAFile
+	sharedPebbleTLSCAFile = pebbleTLSCAFile
 	sharedTmpDir = tmpDir
 
 	return m.Run()
@@ -120,9 +133,10 @@ func runTests(m *testing.M) int {
 
 // Package-level state shared across tests (set by TestMain).
 var (
-	sharedPebbleCAPool *x509.CertPool
-	sharedPebbleCAFile string
-	sharedTmpDir       string
+	sharedPebbleCAPool    *x509.CertPool
+	sharedPebbleCAFile    string
+	sharedPebbleTLSCAFile string // TLS CA for Pebble's ACME endpoint (port 14000)
+	sharedTmpDir          string
 )
 
 // newHarness starts a fresh gateway instance for a single test.
@@ -174,7 +188,7 @@ func newHarness(t *testing.T) *harness {
 			"pebble": {
 				DirectoryURL: "https://127.0.0.1:14000/dir",
 				ContactEmail: "test@example.invalid",
-				CACertPath:   sharedPebbleCAFile,
+				CACertPath:   sharedPebbleTLSCAFile,
 			},
 		},
 		Routing: config.RoutingConfig{

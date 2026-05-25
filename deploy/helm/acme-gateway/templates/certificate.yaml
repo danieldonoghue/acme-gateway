@@ -8,9 +8,8 @@ metadata:
     {{- include "acme-gateway.labels" . | nindent 4 }}
 spec:
   secretName: {{ include "acme-gateway.fullname" . }}-tls
-  commonName: {{ .Values.config.server.baseURL | trimPrefix "https://" | quote }}
   dnsNames:
-    - {{ .Values.config.server.baseURL | trimPrefix "https://" | quote }}
+    - {{ include "acme-gateway.certHostname" . | quote }}
   duration: {{ .Values.tls.certManager.duration | quote }}
   renewBefore: {{ .Values.tls.certManager.renewBefore | quote }}
   issuerRef:

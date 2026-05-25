@@ -18,8 +18,6 @@ Deploys [acme-gateway](../../README.md) — an ACMEv2 gateway that routes certif
 helm install acme-gateway ./deploy/helm/acme-gateway \
   --namespace acme-gateway \
   --create-namespace \
-  --set image.repository=ghcr.io/your-org/acme-gateway \
-  --set image.tag=v1.0.0 \
   --set config.server.baseURL=https://acme-gateway.example.com \
   --set config.upstreams.letsencrypt.contactEmail=ops@example.com \
   --set tls.certManager.enabled=true \
@@ -38,8 +36,6 @@ kubectl create secret tls acme-gateway-tls \
 helm install acme-gateway ./deploy/helm/acme-gateway \
   --namespace acme-gateway \
   --create-namespace \
-  --set image.repository=ghcr.io/your-org/acme-gateway \
-  --set image.tag=v1.0.0 \
   --set config.server.baseURL=https://acme-gateway.example.com \
   --set config.upstreams.letsencrypt.contactEmail=ops@example.com \
   --set tls.existingSecret=acme-gateway-tls
@@ -91,7 +87,7 @@ helm uninstall acme-gateway --namespace acme-gateway
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `image.repository` | `ghcr.io/your-org/acme-gateway` | Container image repository |
+| `image.repository` | `ghcr.io/danieldonoghue/acme-gateway` | Container image repository |
 | `image.tag` | _(Chart.appVersion)_ | Image tag; defaults to chart's `appVersion` |
 | `image.pullPolicy` | `IfNotPresent` | |
 | **Server** | | |

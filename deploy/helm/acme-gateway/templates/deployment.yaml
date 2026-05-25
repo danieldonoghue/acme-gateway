@@ -1,4 +1,5 @@
 {{- include "acme-gateway.validateTLS" . }}
+{{- include "acme-gateway.validateBootstrap" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

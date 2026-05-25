@@ -25,8 +25,8 @@ resources:
 
 images:
   - name: acme-gateway
-    newName: ghcr.io/your-org/acme-gateway
-    newTag: latest
+    newName: ghcr.io/danieldonoghue/acme-gateway
+    newTag: v0.0.2
 
 configMapGenerator:
   - name: acme-gateway-config

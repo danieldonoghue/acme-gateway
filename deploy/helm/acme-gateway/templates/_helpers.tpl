@@ -170,3 +170,23 @@ Call at the top of the Deployment template to fail fast on misconfiguration.
 {{- fail (printf "acme-gateway: conflicting TLS sources (%s). Configure exactly one of: tls.existingSecret, tls.certManager.enabled, or config.bootstrap.enabled." (join ", " $sources)) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Validate: bootstrap mode requires persistence.enabled=true.
+Without a persistent volume the bootstrapped cert and upstream account keypairs
+are lost on every Pod restart, burning CA rate limits each time.
+*/}}
+{{- define "acme-gateway.validateBootstrap" -}}
+{{- if and .Values.config.bootstrap.enabled (not .Values.persistence.enabled) -}}
+{{- fail "acme-gateway: config.bootstrap.enabled requires persistence.enabled=true; without persistent storage the bootstrapped cert and account keys are lost on every Pod restart, burning CA rate limits." -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Hostname extracted from config.server.baseURL for TLS Certificate SANs.
+Strips the scheme and port so e.g. https://acme.example.com:8443 → acme.example.com.
+Safe to use directly as a dnsNames entry.
+*/}}
+{{- define "acme-gateway.certHostname" -}}
+{{- .Values.config.server.baseURL | regexFind "://([^/:]+)" | trimPrefix "://" -}}
+{{- end -}}

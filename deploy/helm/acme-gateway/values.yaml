@@ -3,8 +3,8 @@
 
 # -- Image to deploy.
 image:
-  # -- Image repository. Replace with your registry path.
-  repository: ghcr.io/your-org/acme-gateway
+  # -- Image repository.
+  repository: ghcr.io/danieldonoghue/acme-gateway
   pullPolicy: IfNotPresent
   # -- Overrides Chart.appVersion when set.
   tag: ""

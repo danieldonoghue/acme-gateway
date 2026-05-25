@@ -8,6 +8,8 @@ resources:
   - deployment.yaml
 
 # Common labels applied to all generated resources.
-commonLabels:
-  app.kubernetes.io/name: acme-gateway
-  app.kubernetes.io/component: gateway
+labels:
+  - includeSelectors: true
+    pairs:
+      app.kubernetes.io/name: acme-gateway
+      app.kubernetes.io/component: gateway

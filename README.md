@@ -160,6 +160,34 @@ docker run -d \
   acme-gateway
 ```
 
+### Kubernetes
+
+Two deployment methods are provided under [`deploy/`](deploy/README.md):
+
+| Method | Best for |
+|--------|----------|
+| **Helm** (`deploy/helm/acme-gateway/`) | Getting started quickly; `values.yaml` drives the full config |
+| **Kustomize** (`deploy/kustomize/`) | Platform teams managing plain YAML in source control |
+
+Both handle the key Kubernetes concerns automatically: `strategy: Recreate` (SQLite is single-writer), non-privileged container port `8443` with the Service mapping `443 → 8443`, non-root security context with read-only root filesystem, and a PVC for the SQLite state database.
+
+**Helm quick start:**
+```bash
+helm install acme-gateway ./deploy/helm/acme-gateway \
+  --namespace acme-gateway --create-namespace \
+  --set config.server.baseURL=https://acme-gateway.example.com \
+  --set config.upstreams.letsencrypt.contactEmail=ops@example.com \
+  --set tls.existingSecret=acme-gateway-tls   # or tls.certManager.enabled=true
+```
+
+**Kustomize quick start:**
+```bash
+# Edit deploy/kustomize/overlays/production/config.yaml, then supply tls.crt + tls.key
+kubectl apply -k deploy/kustomize/overlays/production
+```
+
+See [deploy/README.md](deploy/README.md) for full documentation including TLS certificate options (cert-manager, existing Secret, or bootstrap dns-01).
+
 ## Operational Notes
 
 - **Back up the SQLite database.** It contains the gateway's upstream account keypairs. Loss requires re-registration with each upstream CA.

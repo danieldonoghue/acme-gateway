@@ -1,0 +1,287 @@
+# Default values for acme-gateway.
+# Refer to README.md for full configuration documentation.
+
+# -- Image to deploy.
+image:
+  # -- Image repository.
+  repository: ghcr.io/danieldonoghue/acme-gateway
+  pullPolicy: IfNotPresent
+  # -- Overrides Chart.appVersion when set.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- ServiceAccount for the Pod.
+serviceAccount:
+  create: true
+  # -- Annotations to add (e.g. for IRSA / Workload Identity).
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# -- Pod-level security context.
+# fsGroup must match the GID of the runtime user in the container image.
+# The published release image (distroless/nonroot) uses UID/GID 65532.
+# The development image (Dockerfile, Alpine) uses GID 100.
+# Adjust this if you build a custom image with a different GID.
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 65532
+
+# -- Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Kubernetes Service for the gateway.
+service:
+  # -- LoadBalancer exposes port 443 directly to clients.
+  # Use ClusterIP + an Ingress (TCP passthrough) if preferred.
+  type: LoadBalancer
+  port: 443
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# acme-gateway configuration
+# These values are rendered into /etc/acme-gateway/config.yaml inside the Pod.
+# ---------------------------------------------------------------------------
+config:
+  server:
+    # -- Internal container listen address.
+    # Keep at :8443 (non-privileged port). The Service maps 443 → 8443.
+    listen: ":8443"
+    # -- Public HTTPS URL of the gateway as seen by ACME clients.
+    # REQUIRED: must match the TLS certificate's Subject Alternative Name.
+    baseURL: "https://acme-gateway.example.com"
+
+  state:
+    dbPath: "/var/lib/acme-gateway/state.db"
+
+  bootstrap:
+    # -- Set true to have the gateway obtain its own TLS certificate via ACME
+    # dns-01. Requires dnsHooks scripts (see below).
+    # For most Kubernetes deployments it is simpler to use cert-manager
+    # (tls.certManager.enabled) or supply an existing TLS secret (tls.existingSecret).
+    enabled: false
+    # -- Upstream ID to use for the bootstrap certificate request.
+    upstream: "letsencrypt"
+    # -- Hostname the bootstrap certificate will be issued for.
+    domain: ""
+    contactEmail: ""
+    challenge: "dns-01"
+    # -- Paths where the bootstrap process writes (and reads) the server certificate.
+    # In bootstrap mode, /etc/acme-gateway/tls/ is backed by a subPath of the
+    # data PVC so the obtained cert and key survive Pod restarts.
+    certPath: "/etc/acme-gateway/tls/server.crt"
+    keyPath: "/etc/acme-gateway/tls/server.key"
+    renewBeforeDays: 30
+    dnsHook:
+      deployScript: "/etc/acme-gateway/hooks/deploy-dns.sh"
+      cleanupScript: "/etc/acme-gateway/hooks/cleanup-dns.sh"
+
+  # -- Map of upstream ACME CAs. Keys are upstream IDs referenced in routing rules.
+  upstreams:
+    letsencrypt:
+      directoryURL: "https://acme-v02.api.letsencrypt.org/directory"
+      # -- REQUIRED: contact email for ACME account registration.
+      contactEmail: "certadmin@example.com"
+      # -- Number of independent ACME accounts (spreads Let's Encrypt rate limits:
+      # 50 new orders / account / 3 h; accountCount: 3 → 150 orders / 3 h).
+      # Only valid for upstreams without EAB (e.g. Let's Encrypt).
+      accountCount: 1
+    # -- Example: Let's Encrypt staging (for testing)
+    # letsencrypt-staging:
+    #   directoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"
+    #   contactEmail: "certadmin@example.com"
+    #   accountCount: 1
+    #
+    # -- Example: Private CA with EAB
+    # private-ca:
+    #   directoryURL: "https://acme.your-ca.example/directory"
+    #   contactEmail: "certadmin@example.com"
+    #   # Path to PEM file for private CA TLS trust (mount via extraVolumes).
+    #   caCertPath: "/etc/acme-gateway/ca-certs/ca.pem"
+    #   eab:
+    #     # Reference env vars populated from a Secret via extraEnv / extraEnvFrom.
+    #     keyID: "${PRIVATE_CA_EAB_KID}"
+    #     hmacKey: "${PRIVATE_CA_EAB_HMAC}"
+
+  # -- Operator-defined certificate profile vocabulary exposed to ACME clients.
+  # Clients use --preferred-profile <name> (Certbot 4.0+) to select a profile.
+  profiles:
+    tlsserver: "TLS server certificate via Let's Encrypt"
+    # shortlived: "Short-lived (6-day) server certificate via Let's Encrypt"
+    # tlsclient: "TLS client certificate via private CA"
+
+  routing:
+    # -- Routing rules evaluated in order; first match wins.
+    # Supported match keys: profile, keyType (RSA|ECDSA), domainSuffix.
+    # upstreamProfile values:
+    #   omitted / ""        → strip (don't forward profile to upstream)
+    #   "$passthrough"      → forward the client's profile name verbatim
+    #   "some-name"         → always send this specific profile name upstream
+    rules:
+      - match:
+          profile: "tlsserver"
+        upstream: "letsencrypt"
+        upstreamProfile: "tlsserver"
+      # - match:
+      #     profile: "shortlived"
+      #   upstream: "letsencrypt"
+      #   upstreamProfile: "shortlived"
+      # - match:
+      #     profile: "tlsclient"
+      #     keyType: "RSA"
+      #   upstream: "private-ca"
+      # - match:
+      #     domainSuffix: ".internal"
+      #   upstream: "private-ca"
+    # -- Upstream to use when no rule matches.
+    defaultUpstream: "letsencrypt"
+
+# ---------------------------------------------------------------------------
+# TLS certificate for the gateway's own HTTPS listener.
+# Configure exactly ONE of: tls.existingSecret, tls.certManager, or
+# config.bootstrap.enabled (DNS hook-based self-provisioning).
+# ---------------------------------------------------------------------------
+tls:
+  # -- Name of an existing Kubernetes TLS Secret (type: kubernetes.io/tls).
+  # The Secret must contain keys tls.crt and tls.key.
+  # Simplest option when you manage certs externally or use cert-manager
+  # with its own Certificate resource.
+  existingSecret: ""
+
+  # -- Let cert-manager create and renew the gateway's TLS certificate.
+  # Requires cert-manager ≥ v1.0 installed in the cluster.
+  certManager:
+    enabled: false
+    # -- Reference to the cert-manager Issuer or ClusterIssuer.
+    issuerRef:
+      name: "letsencrypt-prod"
+      kind: "ClusterIssuer"
+      group: "cert-manager.io"
+    duration: "2160h"    # 90 days
+    renewBefore: "720h"  # 30 days
+
+# ---------------------------------------------------------------------------
+# DNS hook scripts — only required when config.bootstrap.enabled: true.
+# These scripts are mounted at /etc/acme-gateway/hooks/ (mode 0755) and
+# called by the bootstrap process during dns-01 challenge validation.
+# Env vars provided: CERTBOT_DOMAIN, CERTBOT_VALIDATION, CERTBOT_TOKEN.
+#
+# WARNING: the published release image (distroless/nonroot) contains no shell
+# interpreter. Shell-based hook scripts will fail at runtime. Bootstrap mode
+# with shell hooks requires a shell-capable image (e.g. the development
+# Dockerfile, which uses Alpine), or hooks compiled as standalone static
+# binaries built into a custom image.
+# ---------------------------------------------------------------------------
+dnsHooks:
+  enabled: false
+  deployScript: |
+    #!/bin/sh
+    set -e
+    # TODO: add TXT record _acme-challenge.${CERTBOT_DOMAIN} = ${CERTBOT_VALIDATION}
+    echo "deploy-dns hook not implemented" >&2
+    exit 1
+  cleanupScript: |
+    #!/bin/sh
+    set -e
+    # TODO: remove TXT record _acme-challenge.${CERTBOT_DOMAIN}
+    echo "cleanup-dns hook not implemented" >&2
+    exit 1
+
+# -- Additional environment variables injected into the container.
+# Use this to supply EAB credentials referenced as ${VAR} in config.yaml.
+extraEnv: []
+# - name: PRIVATE_CA_EAB_KID
+#   valueFrom:
+#     secretKeyRef:
+#       name: acme-gateway-eab
+#       key: kid
+# - name: PRIVATE_CA_EAB_HMAC
+#   valueFrom:
+#     secretKeyRef:
+#       name: acme-gateway-eab
+#       key: hmac
+
+# -- Inject all keys from a ConfigMap or Secret as environment variables.
+extraEnvFrom: []
+# - secretRef:
+#     name: acme-gateway-eab-credentials
+
+# -- Additional volumes to attach to the Pod (e.g. private CA cert).
+extraVolumes: []
+# - name: private-ca-cert
+#   secret:
+#     secretName: private-ca-cert
+
+# -- Additional volume mounts for the container.
+extraVolumeMounts: []
+# - name: private-ca-cert
+#   mountPath: /etc/acme-gateway/ca-certs
+#   readOnly: true
+
+# -- Persistent storage for the SQLite state database.
+# The database holds upstream ACME account keypairs — back it up.
+persistence:
+  enabled: true
+  # -- Storage class. Leave empty to use the cluster default.
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+  # -- Use an existing PVC instead of creating a new one.
+  existingClaim: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# -- Liveness probe — uses the ACME /directory endpoint (no auth required).
+livenessProbe:
+  httpGet:
+    path: /directory
+    port: https
+    scheme: HTTPS
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Readiness probe.
+readinessProbe:
+  httpGet:
+    path: /directory
+    port: https
+    scheme: HTTPS
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Startup probe. Kubernetes will not start liveness/readiness checks until
+# this probe succeeds. The default allows up to 10 minutes (30 × 20 s) which
+# accommodates the dns-01 bootstrap flow (DNS propagation can take several
+# minutes). Reduce failureThreshold when bootstrap is not used.
+startupProbe:
+  httpGet:
+    path: /directory
+    port: https
+    scheme: HTTPS
+  failureThreshold: 30
+  periodSeconds: 20
+  timeoutSeconds: 5
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,39 @@
+acme-gateway has been deployed.
+
+Gateway URL: {{ .Values.config.server.baseURL }}
+
+{{- if eq .Values.service.type "LoadBalancer" }}
+
+To get the external IP of the LoadBalancer Service, run:
+  kubectl get svc --namespace {{ .Release.Namespace }} {{ include "acme-gateway.fullname" . }} -w
+
+Once an IP is assigned, ensure your DNS record for
+  {{ include "acme-gateway.certHostname" . }}
+points to that IP.
+{{- end }}
+
+TLS certificate source:
+{{- if .Values.config.bootstrap.enabled }}
+  bootstrap (dns-01) — the gateway will obtain its own certificate on first start.
+  Make sure the DNS hook scripts in the 'dns-hooks' ConfigMap are implemented.
+{{- else if .Values.tls.certManager.enabled }}
+  cert-manager Certificate '{{ include "acme-gateway.fullname" . }}-tls'
+  (issuer: {{ .Values.tls.certManager.issuerRef.kind }}/{{ .Values.tls.certManager.issuerRef.name }})
+{{- else if .Values.tls.existingSecret }}
+  existing Secret '{{ .Values.tls.existingSecret }}'
+{{- else }}
+  *** WARNING: no TLS source configured. ***
+  Set one of:
+    tls.existingSecret        – name of an existing kubernetes.io/tls Secret
+    tls.certManager.enabled   – let cert-manager manage the certificate
+    config.bootstrap.enabled  – gateway self-provisions via dns-01
+{{- end }}
+
+ACME directory endpoint (for client configuration):
+  {{ .Values.config.server.baseURL }}/directory
+
+To check gateway health (the release image is distroless — no shell or wget):
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    deploy/{{ include "acme-gateway.fullname" . }} 8443:8443 &
+  curl -sk https://localhost:8443/directory
+  kill %1

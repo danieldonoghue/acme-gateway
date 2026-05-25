@@ -1,0 +1,17 @@
+apiVersion: v2
+name: acme-gateway
+description: >
+  ACMEv2 gateway that presents a single ACME server interface to ACME clients
+  and routes certificate requests to multiple upstream CAs based on configurable
+  rules (profile, key type, domain suffix).
+type: application
+version: 0.1.0
+appVersion: "v0.0.2"
+keywords:
+  - acme
+  - certificate
+  - pki
+  - tls
+home: https://github.com/danieldonoghue/acme-gateway
+sources:
+  - https://github.com/danieldonoghue/acme-gateway

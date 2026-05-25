@@ -17,6 +17,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set up yq
+        uses: mikefarah/yq@v4.45.1
+
+      - name: Validate deployment manifest versions
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          CHART_VER=$(yq '.appVersion' deploy/helm/acme-gateway/Chart.yaml)
+          PROD_TAG=$(yq '.images[0].newTag' deploy/kustomize/overlays/production/kustomization.yaml)
+          STAGING_TAG=$(yq '.images[0].newTag' deploy/kustomize/overlays/staging/kustomization.yaml)
+          fail=0
+          [[ "${CHART_VER}" == "${VERSION}" ]] || { echo "::error::deploy/helm/acme-gateway/Chart.yaml appVersion is '${CHART_VER}', expected '${VERSION}'"; fail=1; }
+          [[ "${PROD_TAG}" == "${VERSION}" ]] || { echo "::error::deploy/kustomize/overlays/production/kustomization.yaml newTag is '${PROD_TAG}', expected '${VERSION}'"; fail=1; }
+          [[ "${STAGING_TAG}" == "${VERSION}" ]] || { echo "::error::deploy/kustomize/overlays/staging/kustomization.yaml newTag is '${STAGING_TAG}', expected '${VERSION}'"; fail=1; }
+          exit $fail
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

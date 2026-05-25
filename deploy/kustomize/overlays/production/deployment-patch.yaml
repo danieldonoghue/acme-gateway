@@ -1,0 +1,22 @@
+# Strategic merge patch applied on top of the base Deployment for production.
+# Adjust resources, add envFrom for EAB secrets, or set node affinity here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acme-gateway
+spec:
+  template:
+    spec:
+      containers:
+        - name: acme-gateway
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          # Uncomment to inject EAB credentials from the acme-gateway-eab Secret.
+          # The values become available as ${VAR_NAME} in config.yaml.
+          # envFrom:
+          #   - secretRef:
+          #       name: acme-gateway-eab

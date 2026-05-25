@@ -160,6 +160,34 @@ docker run -d \
   acme-gateway
 ```
 
+### Kubernetes
+
+Two deployment methods are provided under [`deploy/`](deploy/README.md):
+
+| Method | Best for |
+|--------|----------|
+| **Helm** (`deploy/helm/acme-gateway/`) | Getting started quickly; `values.yaml` drives the full config |
+| **Kustomize** (`deploy/kustomize/`) | Platform teams managing plain YAML in source control |
+
+Both handle the key Kubernetes concerns automatically: `strategy: Recreate` (SQLite is single-writer), non-privileged container port `8443` with the Service mapping `443 → 8443`, non-root security context with read-only root filesystem, and a PVC for the SQLite state database.
+
+**Helm quick start:**
+```bash
+helm install acme-gateway ./deploy/helm/acme-gateway \
+  --namespace acme-gateway --create-namespace \
+  --set config.server.baseURL=https://acme-gateway.example.com \
+  --set config.upstreams.letsencrypt.contactEmail=ops@example.com \
+  --set tls.existingSecret=acme-gateway-tls   # or tls.certManager.enabled=true
+```
+
+**Kustomize quick start:**
+```bash
+# Edit deploy/kustomize/overlays/production/config.yaml, then supply tls.crt + tls.key
+kubectl apply -k deploy/kustomize/overlays/production
+```
+
+See [deploy/README.md](deploy/README.md) for full documentation including TLS certificate options (cert-manager, existing Secret, or bootstrap dns-01).
+
 ## Operational Notes
 
 - **Back up the SQLite database.** It contains the gateway's upstream account keypairs. Loss requires re-registration with each upstream CA.
@@ -189,6 +217,32 @@ Always test against LE **staging** (`https://acme-staging-v02.api.letsencrypt.or
 Releases are produced automatically by the [release workflow](.github/workflows/release.yml) when a `v`-prefixed tag is pushed.
 
 ### Cutting a release
+
+Before tagging, bump the image version in the three deployment manifests. The
+release workflow validates these match the tag and will fail loudly if they are
+stale.
+
+| File | Field |
+|---|---|
+| `deploy/helm/acme-gateway/Chart.yaml` | `appVersion` |
+| `deploy/kustomize/overlays/production/kustomization.yaml` | `images[0].newTag` |
+| `deploy/kustomize/overlays/staging/kustomization.yaml` | `images[0].newTag` |
+
+```bash
+VERSION=v1.2.3   # the version you're about to release
+
+perl -i -pe "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/helm/acme-gateway/Chart.yaml
+perl -i -pe "s/newTag:.*/newTag: ${VERSION}/"  deploy/kustomize/overlays/production/kustomization.yaml
+perl -i -pe "s/newTag:.*/newTag: ${VERSION}/"  deploy/kustomize/overlays/staging/kustomization.yaml
+
+git add deploy/helm/acme-gateway/Chart.yaml \
+        deploy/kustomize/overlays/production/kustomization.yaml \
+        deploy/kustomize/overlays/staging/kustomization.yaml
+git commit -m "chore(release): bump deployment manifests to ${VERSION}"
+git push
+```
+
+Then run the full test suite and tag:
 
 ```bash
 # Ensure master is clean and all tests pass.

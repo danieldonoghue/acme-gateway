@@ -1,0 +1,81 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ---------------------------------------------------------------------------
+# Production overlay for acme-gateway.
+#
+# Before applying, you MUST:
+#   1. Edit config.yaml with your real values (baseURL, upstreams, routing, etc.)
+#   2. Create the TLS secret files:
+#        tls.crt  — PEM certificate chain for the gateway's HTTPS listener
+#        tls.key  — PEM private key (keep this file out of version control)
+#   3. If using upstream EAB credentials, create eab.env (see secretGenerator below).
+#   4. Replace `newName` / `newTag` in the images block with your actual image.
+#
+# Apply with:
+#   kubectl apply -k deploy/kustomize/overlays/production
+# ---------------------------------------------------------------------------
+
+namespace: acme-gateway
+
+resources:
+  - ../../base
+
+# ---------------------------------------------------------------------------
+# Image — replace with your actual registry and tag.
+# ---------------------------------------------------------------------------
+images:
+  - name: acme-gateway
+    newName: ghcr.io/danieldonoghue/acme-gateway
+    newTag: v0.0.2
+
+# ---------------------------------------------------------------------------
+# ConfigMap: acme-gateway-config
+# Populated from config.yaml in this directory (edit that file directly).
+# disableNameSuffixHash keeps the name stable so the base Deployment reference
+# never needs patching.
+# ---------------------------------------------------------------------------
+configMapGenerator:
+  - name: acme-gateway-config
+    files:
+      - config.yaml=config.yaml
+
+generatorOptions:
+  # disableNameSuffixHash keeps ConfigMap/Secret names stable so the base
+  # Deployment references never need patching. Trade-off: Kustomize cannot
+  # detect content changes and trigger automatic rollouts. After updating
+  # config.yaml or TLS files you must run:
+  #   kubectl rollout restart deployment/acme-gateway -n acme-gateway
+  disableNameSuffixHash: true
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+secretGenerator:
+  # TLS certificate for the gateway's HTTPS listener.
+  # tls.crt and tls.key must exist in this directory (not committed to VCS).
+  - name: acme-gateway-tls
+    type: kubernetes.io/tls
+    files:
+      - tls.crt=tls.crt
+      - tls.key=tls.key
+
+  # EAB credentials for private CA upstreams (only needed if you use EAB).
+  # Create eab.env with lines like:
+  #   PRIVATE_CA_EAB_KID=<value>
+  #   PRIVATE_CA_EAB_HMAC=<value>
+  # Then uncomment the block below and reference ${PRIVATE_CA_EAB_KID} etc.
+  # in config.yaml under the relevant upstream's eab section.
+  #
+  # - name: acme-gateway-eab
+  #   envs:
+  #     - eab.env
+
+# ---------------------------------------------------------------------------
+# Patches
+# ---------------------------------------------------------------------------
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: acme-gateway

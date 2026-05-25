@@ -1,0 +1,19 @@
+{{- if .Values.tls.certManager.enabled -}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "acme-gateway.fullname" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "acme-gateway.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "acme-gateway.fullname" . }}-tls
+  dnsNames:
+    - {{ include "acme-gateway.certHostname" . | quote }}
+  duration: {{ .Values.tls.certManager.duration | quote }}
+  renewBefore: {{ .Values.tls.certManager.renewBefore | quote }}
+  issuerRef:
+    name: {{ .Values.tls.certManager.issuerRef.name | quote }}
+    kind: {{ .Values.tls.certManager.issuerRef.kind | quote }}
+    group: {{ .Values.tls.certManager.issuerRef.group | quote }}
+{{- end }}

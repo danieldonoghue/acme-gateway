@@ -28,8 +28,11 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # Roll the Deployment when the ConfigMap changes.
+        # Roll the Deployment when the config or dns-hooks ConfigMap changes.
         checksum/config: {{ include "acme-gateway.configYaml" . | sha256sum }}
+        {{- if .Values.dnsHooks.enabled }}
+        checksum/dns-hooks: {{ (print .Values.dnsHooks.deployScript .Values.dnsHooks.cleanupScript) | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

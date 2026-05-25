@@ -17,6 +17,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Validate deployment manifest versions
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          CHART_VER=$(sed -n 's/^appVersion: "\(.*\)"/\1/p' deploy/helm/acme-gateway/Chart.yaml)
+          PROD_TAG=$(sed -n 's/[[:space:]]*newTag:[[:space:]]//p' deploy/kustomize/overlays/production/kustomization.yaml)
+          STAGING_TAG=$(sed -n 's/[[:space:]]*newTag:[[:space:]]//p' deploy/kustomize/overlays/staging/kustomization.yaml)
+          fail=0
+          [[ "${CHART_VER}" == "${VERSION}" ]] || { echo "::error::deploy/helm/acme-gateway/Chart.yaml appVersion is '${CHART_VER}', expected '${VERSION}'"; fail=1; }
+          [[ "${PROD_TAG}" == "${VERSION}" ]] || { echo "::error::deploy/kustomize/overlays/production/kustomization.yaml newTag is '${PROD_TAG}', expected '${VERSION}'"; fail=1; }
+          [[ "${STAGING_TAG}" == "${VERSION}" ]] || { echo "::error::deploy/kustomize/overlays/staging/kustomization.yaml newTag is '${STAGING_TAG}', expected '${VERSION}'"; fail=1; }
+          exit $fail
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

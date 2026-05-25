@@ -218,6 +218,32 @@ Releases are produced automatically by the [release workflow](.github/workflows/
 
 ### Cutting a release
 
+Before tagging, bump the image version in the three deployment manifests. The
+release workflow validates these match the tag and will fail loudly if they are
+stale.
+
+| File | Field |
+|---|---|
+| `deploy/helm/acme-gateway/Chart.yaml` | `appVersion` |
+| `deploy/kustomize/overlays/production/kustomization.yaml` | `images[0].newTag` |
+| `deploy/kustomize/overlays/staging/kustomization.yaml` | `images[0].newTag` |
+
+```bash
+VERSION=v1.2.3   # the version you're about to release
+
+perl -i -pe "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/helm/acme-gateway/Chart.yaml
+perl -i -pe "s/newTag:.*/newTag: ${VERSION}/"  deploy/kustomize/overlays/production/kustomization.yaml
+perl -i -pe "s/newTag:.*/newTag: ${VERSION}/"  deploy/kustomize/overlays/staging/kustomization.yaml
+
+git add deploy/helm/acme-gateway/Chart.yaml \
+        deploy/kustomize/overlays/production/kustomization.yaml \
+        deploy/kustomize/overlays/staging/kustomization.yaml
+git commit -m "chore(release): bump deployment manifests to ${VERSION}"
+git push
+```
+
+Then run the full test suite and tag:
+
 ```bash
 # Ensure master is clean and all tests pass.
 git checkout master && git pull

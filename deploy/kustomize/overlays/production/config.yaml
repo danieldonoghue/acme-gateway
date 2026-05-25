@@ -1,0 +1,78 @@
+# acme-gateway configuration — production environment.
+#
+# This file is mounted at /etc/acme-gateway/config.yaml inside the Pod.
+# Edit every value marked REQUIRED before applying the overlay.
+# See config.yaml.example in the repository root for full documentation.
+#
+# EAB secrets: reference environment variables using ${VAR_NAME} syntax.
+# Populate them from the acme-gateway-eab Secret via envFrom in deployment-patch.yaml.
+
+server:
+  # REQUIRED: container-internal listen address.
+  # Keep at :8443 (non-privileged port); the Service maps 443 → 8443.
+  listen: ":8443"
+  # REQUIRED: public HTTPS URL as seen by ACME clients (Certbot etc.).
+  # Must match the CN/SAN on the TLS certificate in the acme-gateway-tls secret.
+  base_url: "https://acme-gateway.example.com"
+
+state:
+  db_path: "/var/lib/acme-gateway/state.db"
+
+bootstrap:
+  # disabled: TLS certificate comes from the acme-gateway-tls Kubernetes Secret.
+  # The gateway reads the cert once at startup (no live reload for external certs).
+  # Use a Deployment rollout or a secret-rotation operator to pick up renewals.
+  enabled: false
+  cert_path: "/etc/acme-gateway/tls/server.crt"
+  key_path: "/etc/acme-gateway/tls/server.key"
+
+upstreams:
+  # REQUIRED: at minimum configure one upstream CA.
+  letsencrypt:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    # REQUIRED: contact email registered with Let's Encrypt.
+    contact_email: "certadmin@example.com"
+    # Spread orders across N independent ACME accounts (50 orders/account/3 h).
+    account_count: 3
+
+  # Example: private CA with EAB authentication.
+  # Uncomment and populate once the acme-gateway-eab Secret exists.
+  # private-ca:
+  #   directory_url: "https://acme.your-ca.example/directory"
+  #   contact_email: "certadmin@example.com"
+  #   # Path to the CA's root cert (mount via an additional Secret + extraVolumeMounts).
+  #   ca_cert_path: "/etc/acme-gateway/ca-certs/ca.pem"
+  #   eab:
+  #     key_id: "${PRIVATE_CA_EAB_KID}"
+  #     hmac_key: "${PRIVATE_CA_EAB_HMAC}"
+
+profiles:
+  tlsserver: "TLS server certificate via Let's Encrypt"
+  # shortlived: "Short-lived (6-day) server certificate via Let's Encrypt"
+  # tlsclient:  "TLS client certificate via private CA"
+
+routing:
+  rules:
+    - match:
+        profile: "tlsserver"
+      upstream: letsencrypt
+      upstream_profile: "tlsserver"
+
+    # Route short-lived cert requests to Let's Encrypt with the shortlived profile.
+    # - match:
+    #     profile: "shortlived"
+    #   upstream: letsencrypt
+    #   upstream_profile: "shortlived"
+
+    # Route .internal domains to the private CA regardless of key type.
+    # - match:
+    #     domain_suffix: ".internal"
+    #   upstream: private-ca
+
+    # Route client cert requests (RSA) to the private CA.
+    # - match:
+    #     profile: "tlsclient"
+    #     key_type: "RSA"
+    #   upstream: private-ca
+
+  default_upstream: letsencrypt

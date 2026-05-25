@@ -1,0 +1,50 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ---------------------------------------------------------------------------
+# Staging overlay for acme-gateway.
+#
+# Points to Let's Encrypt *staging* — certificates issued here are signed by
+# a test root and are NOT trusted by browsers or standard TLS clients.
+# Use this overlay to validate config, routing rules, and upstream connectivity
+# before promoting to production.
+#
+# Before applying, you MUST:
+#   1. Edit config.yaml (LE staging directory URL is already set).
+#   2. Create tls.crt / tls.key for the gateway's own TLS listener.
+#      A self-signed cert is fine for staging since clients won't validate it.
+#
+# Apply with:
+#   kubectl apply -k deploy/kustomize/overlays/staging
+# ---------------------------------------------------------------------------
+
+namespace: acme-gateway-staging
+
+resources:
+  - ../../base
+
+images:
+  - name: acme-gateway
+    newName: ghcr.io/your-org/acme-gateway
+    newTag: latest
+
+configMapGenerator:
+  - name: acme-gateway-config
+    files:
+      - config.yaml=config.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+secretGenerator:
+  - name: acme-gateway-tls
+    type: kubernetes.io/tls
+    files:
+      - tls.crt=tls.crt
+      - tls.key=tls.key
+
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: acme-gateway

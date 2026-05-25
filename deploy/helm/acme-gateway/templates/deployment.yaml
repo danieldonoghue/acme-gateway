@@ -1,0 +1,149 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "acme-gateway.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "acme-gateway.labels" . | nindent 4 }}
+  {{- with .Values.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  # Recreate strategy is required: acme-gateway uses a SQLite database which
+  # only supports a single writer. A RollingUpdate would allow two Pods to
+  # access the database simultaneously, causing lock errors.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "acme-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "acme-gateway.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Roll the Deployment when the ConfigMap changes.
+        checksum/config: {{ include "acme-gateway.configYaml" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "acme-gateway.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: acme-gateway
+          image: {{ include "acme-gateway.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - -config
+            - /etc/acme-gateway/config.yaml
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # Config file (subPath avoids conflicting with the tls mount).
+            - name: config
+              mountPath: /etc/acme-gateway/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            # TLS certificate and key for the HTTPS listener.
+            - name: tls
+              mountPath: /etc/acme-gateway/tls
+              readOnly: {{ not .Values.config.bootstrap.enabled }}
+            # Persistent SQLite state database.
+            - name: data
+              mountPath: /var/lib/acme-gateway
+            # Writable /tmp for any runtime scratch space.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.dnsHooks.enabled }}
+            # DNS hook scripts for bootstrap dns-01 challenge.
+            - name: dns-hooks
+              mountPath: /etc/acme-gateway/hooks
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "acme-gateway.fullname" . }}-config
+        # TLS source: bootstrap (emptyDir, gateway writes cert here),
+        # cert-manager / existingSecret (Secret mount, read-only).
+        {{- if .Values.config.bootstrap.enabled }}
+        - name: tls
+          emptyDir: {}
+        {{- else }}
+        - name: tls
+          secret:
+            secretName: {{ include "acme-gateway.tlsSecretName" . }}
+            # Map Kubernetes TLS secret keys to the names the gateway expects.
+            items:
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+        {{- end }}
+        # SQLite persistent storage.
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-data" (include "acme-gateway.fullname" .)) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.dnsHooks.enabled }}
+        - name: dns-hooks
+          configMap:
+            name: {{ include "acme-gateway.fullname" . }}-dns-hooks
+            defaultMode: 0755
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

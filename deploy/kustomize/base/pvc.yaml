@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: acme-gateway-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # 1 Gi is ample for the SQLite state database.
+      # Increase if you expect very large order volumes.
+      storage: 1Gi
+  # storageClassName is intentionally omitted; overlays should set it
+  # via a patch if the cluster default is not appropriate.

@@ -18,7 +18,7 @@ Choose **Kustomize** if you prefer to keep plain YAML in source control and comp
 
 - Kubernetes ≥ 1.25
 - A container image of `acme-gateway` published to a registry you can pull from
-- A TLS certificate for the gateway's public hostname (see [TLS certificates](#tls-certificates) below)
+- A TLS certificate for the gateway's public hostname — **or** DNS hook scripts if using bootstrap mode, which self-provisions the certificate via dns-01 (see [TLS certificates](#tls-certificates) below)
 - Persistent storage available (default `StorageClass` or named class) for the SQLite state database
 
 ---

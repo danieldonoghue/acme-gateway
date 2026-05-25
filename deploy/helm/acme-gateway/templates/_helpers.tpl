@@ -180,6 +180,9 @@ are lost on every Pod restart, burning CA rate limits each time.
 {{- if and .Values.config.bootstrap.enabled (not .Values.persistence.enabled) -}}
 {{- fail "acme-gateway: config.bootstrap.enabled requires persistence.enabled=true; without persistent storage the bootstrapped cert and account keys are lost on every Pod restart, burning CA rate limits." -}}
 {{- end -}}
+{{- if and .Values.config.bootstrap.enabled (not .Values.dnsHooks.enabled) -}}
+{{- fail "acme-gateway: config.bootstrap.enabled requires dnsHooks.enabled=true; the bootstrap dns-01 flow executes the hook scripts mounted from the dns-hooks ConfigMap." -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -188,5 +191,9 @@ Strips the scheme and port so e.g. https://acme.example.com:8443 → acme.exampl
 Safe to use directly as a dnsNames entry.
 */}}
 {{- define "acme-gateway.certHostname" -}}
-{{- .Values.config.server.baseURL | regexFind "://([^/:]+)" | trimPrefix "://" -}}
+{{- $host := .Values.config.server.baseURL | regexFind "://([^/:]+)" | trimPrefix "://" -}}
+{{- if not $host -}}
+{{- fail (printf "acme-gateway: cannot extract hostname from config.server.baseURL=%q; expected https://hostname or https://hostname:port" .Values.config.server.baseURL) -}}
+{{- end -}}
+{{- $host -}}
 {{- end -}}

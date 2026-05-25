@@ -8,7 +8,7 @@ To get the external IP of the LoadBalancer Service, run:
   kubectl get svc --namespace {{ .Release.Namespace }} {{ include "acme-gateway.fullname" . }} -w
 
 Once an IP is assigned, ensure your DNS record for
-  {{ .Values.config.server.baseURL | trimPrefix "https://" }}
+  {{ include "acme-gateway.certHostname" . }}
 points to that IP.
 {{- end }}
 

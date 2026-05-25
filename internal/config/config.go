@@ -211,6 +211,17 @@ func validate(cfg *Config) error {
 		}
 	}
 
+	// server.base_url must always use https:// — ACME clients sign this URL
+	// verbatim into JWS requests, and the gateway validates the url header
+	// against cfg.Server.BaseURL. An http:// base_url would silently break
+	// all JWS url validation regardless of whether TLS is terminated here or
+	// externally.
+	if !strings.HasPrefix(cfg.Server.BaseURL, "https://") {
+		return fmt.Errorf("server.base_url must begin with https://: " +
+			"ACME clients connect via https:// and this URL is embedded verbatim " +
+			"in signed JWS requests")
+	}
+
 	// TLS-mode-specific validation.
 	if !cfg.Server.TLSEnabled() {
 		// External TLS termination — the gateway listens on plain HTTP.
@@ -218,11 +229,6 @@ func validate(cfg *Config) error {
 		if cfg.Bootstrap.Enabled {
 			return fmt.Errorf("bootstrap.enabled cannot be true when server.tls is false: " +
 				"certificate management is unnecessary when TLS is terminated externally")
-		}
-		if !strings.HasPrefix(cfg.Server.BaseURL, "https://") {
-			return fmt.Errorf("server.base_url must begin with https:// even when server.tls is false: " +
-				"ACME clients connect via https:// through the external terminator, " +
-				"and this URL is embedded verbatim in signed JWS requests")
 		}
 	} else {
 		// TLS listener — a certificate must be available at startup.

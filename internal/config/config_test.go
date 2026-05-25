@@ -532,7 +532,32 @@ routing:
 	path := writeTemp(t, cfg)
 	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected error: base_url must begin with https:// even in external-TLS mode")
+		t.Fatal("expected error: base_url must begin with https://")
+	}
+	if !strings.Contains(err.Error(), "https://") {
+		t.Errorf("error message should mention https://, got: %v", err)
+	}
+}
+
+func TestLoad_TLSEnabled_HTTPBaseURL(t *testing.T) {
+	cfg := `
+server:
+  base_url: "http://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: base_url must begin with https:// in TLS mode too")
 	}
 	if !strings.Contains(err.Error(), "https://") {
 		t.Errorf("error message should mention https://, got: %v", err)

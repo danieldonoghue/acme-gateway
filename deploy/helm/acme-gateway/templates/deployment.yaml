@@ -56,15 +56,27 @@ spec:
               protocol: TCP
           {{- with .Values.livenessProbe }}
           livenessProbe:
+            {{- if .httpGet }}
             {{- mergeOverwrite (deepCopy .) (dict "httpGet" (dict "port" (ternary "https" "http" $.Values.config.server.tls) "scheme" (ternary "HTTPS" "HTTP" $.Values.config.server.tls))) | toYaml | nindent 12 }}
+            {{- else }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with .Values.readinessProbe }}
           readinessProbe:
+            {{- if .httpGet }}
             {{- mergeOverwrite (deepCopy .) (dict "httpGet" (dict "port" (ternary "https" "http" $.Values.config.server.tls) "scheme" (ternary "HTTPS" "HTTP" $.Values.config.server.tls))) | toYaml | nindent 12 }}
+            {{- else }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with .Values.startupProbe }}
           startupProbe:
+            {{- if .httpGet }}
             {{- mergeOverwrite (deepCopy .) (dict "httpGet" (dict "port" (ternary "https" "http" $.Values.config.server.tls) "scheme" (ternary "HTTPS" "HTTP" $.Values.config.server.tls))) | toYaml | nindent 12 }}
+            {{- else }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

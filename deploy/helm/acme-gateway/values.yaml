@@ -259,6 +259,8 @@ resources:
 # -- Liveness probe — uses the ACME /directory endpoint (no auth required).
 # When config.server.tls is false, the deployment template automatically
 # sets scheme: HTTP and port: http regardless of what is set here.
+# NOTE: probe overrides must keep httpGet as the probe type; switching to
+# tcpSocket or exec will conflict with the automatic httpGet injection.
 livenessProbe:
   httpGet:
     path: /directory

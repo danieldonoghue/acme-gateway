@@ -63,7 +63,7 @@ func run(cfgPath string, log *slog.Logger) error {
 		log.Warn("pruning nonces", "err", err)
 	}
 
-	// ── Bootstrap gateway certificate (TLS mode only) ──────────────────────────
+	// ── TLS certificate setup (skipped in external-termination mode) ────────────
 	var srv *server.Server
 
 	r := router.New(&cfg.Routing)

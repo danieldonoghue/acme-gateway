@@ -113,6 +113,8 @@ When `bootstrap.enabled: true`, the gateway obtains its own TLS certificate on f
 
 Set `bootstrap.enabled: false` to provide the certificate externally (cert-manager, Ansible, manual). The gateway loads `cert_path`/`key_path` once at startup. **There is no live reload for the external path** — if the files are rewritten by an external renewer, the gateway must be restarted to serve the new certificate. See docs/decisions/0003-no-live-reload-external-cert.md
 
+Set `server.tls: false` to disable TLS termination at the gateway entirely. The gateway listens on plain HTTP and expects a Kubernetes Ingress controller, cloud load balancer, or service mesh to terminate HTTPS externally. `base_url` must still begin with `https://` — ACME clients connect via HTTPS through the external terminator and that URL is signed into JWS requests. `bootstrap` must also be disabled in this mode.
+
 ### DNS hook scripts
 
 Hook scripts are called with the same environment variables as Certbot's manual DNS hooks:
@@ -170,6 +172,14 @@ Two deployment methods are provided under [`deploy/`](deploy/README.md):
 | **Kustomize** (`deploy/kustomize/`) | Platform teams managing plain YAML in source control |
 
 Both handle the key Kubernetes concerns automatically: `strategy: Recreate` (SQLite is single-writer), non-privileged container port `8443` with the Service mapping `443 → 8443`, non-root security context with read-only root filesystem, and a PVC for the SQLite state database.
+
+Kustomize overlays provided:
+
+| Overlay | TLS mode | Use when |
+|---------|----------|---------|
+| `overlays/production` | Gateway-terminated (existing Secret) | Bare-metal / cloud LB with your own cert |
+| `overlays/staging` | Gateway-terminated (existing Secret) | Non-production mirror of the above |
+| `overlays/external-tls` | External termination (`server.tls: false`) | Ingress controller or cloud LB handles TLS |
 
 **Helm quick start:**
 ```bash

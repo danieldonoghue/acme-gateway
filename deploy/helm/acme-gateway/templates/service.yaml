@@ -12,9 +12,9 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   ports:
-    - name: https
+    - name: {{ if .Values.config.server.tls }}https{{ else }}http{{ end }}
       port: {{ .Values.service.port }}
-      targetPort: https
+      targetPort: {{ if .Values.config.server.tls }}https{{ else }}http{{ end }}
       protocol: TCP
   selector:
     {{- include "acme-gateway.selectorLabels" . | nindent 4 }}

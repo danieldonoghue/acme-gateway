@@ -1,0 +1,36 @@
+# Strategic merge patch for external TLS termination deployments.
+# Changes from the base:
+#   - Port renamed from 'https' (8443) to 'http' (8080)
+#   - Liveness/readiness probe scheme changed from HTTPS to HTTP
+#   - TLS Secret volume and volumeMount removed (no certificate needed)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acme-gateway
+spec:
+  template:
+    spec:
+      containers:
+        - name: acme-gateway
+          ports:
+            - $patch: delete
+              containerPort: 8443
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /directory
+              port: http
+              scheme: HTTP
+          readinessProbe:
+            httpGet:
+              path: /directory
+              port: http
+              scheme: HTTP
+          volumeMounts:
+            - $patch: delete
+              mountPath: /etc/acme-gateway/tls
+      volumes:
+        - $patch: delete
+          name: tls

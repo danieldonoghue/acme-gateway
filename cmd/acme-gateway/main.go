@@ -63,7 +63,7 @@ func run(cfgPath string, log *slog.Logger) error {
 		log.Warn("pruning nonces", "err", err)
 	}
 
-	// ── Bootstrap gateway certificate ────────────────────────────────────────
+	// ── TLS certificate setup (skipped in external-termination mode) ────────────
 	var srv *server.Server
 
 	r := router.New(&cfg.Routing)
@@ -71,47 +71,54 @@ func run(cfgPath string, log *slog.Logger) error {
 	h := server.NewHandler(cfg, st, r, pool, log)
 	srv = server.NewServer(h, log)
 
-	if cfg.Bootstrap.Enabled {
-		upCfg := cfg.Upstreams[cfg.Bootstrap.Upstream]
+	if cfg.Server.TLSEnabled() {
+		if cfg.Bootstrap.Enabled {
+			upCfg := cfg.Upstreams[cfg.Bootstrap.Upstream]
 
-		mgr := bootstrap.NewManager(
-			&cfg.Bootstrap,
-			&upCfg,
-			log,
-			func(cert *tls.Certificate) {
-				srv.SetCertificate(cert)
-				log.Info("certificate reloaded", "domain", cfg.Bootstrap.Domain)
-			},
-		)
+			mgr := bootstrap.NewManager(
+				&cfg.Bootstrap,
+				&upCfg,
+				log,
+				func(cert *tls.Certificate) {
+					srv.SetCertificate(cert)
+					log.Info("certificate reloaded", "domain", cfg.Bootstrap.Domain)
+				},
+			)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		tlsCert, err := mgr.Bootstrap(ctx)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("bootstrapping certificate: %w", err)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			tlsCert, err := mgr.Bootstrap(ctx)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("bootstrapping certificate: %w", err)
+			}
+			srv.SetCertificate(tlsCert)
+
+			// Start renewal loop (uses the same manager so onRenew fires on reload).
+			renewCtx, renewCancel := context.WithCancel(context.Background())
+			defer renewCancel()
+			mgr.StartRenewalLoop(renewCtx, tlsCert)
+		} else {
+			// Externally-managed certificate: load the keypair from disk once at
+			// startup. cert_path and key_path are validated by config.Load.
+			//
+			// NOTE: there is no live-reload for the external path. If an external
+			// renewer (cert-manager, Ansible cron, etc.) rewrites the files, the
+			// gateway must be restarted to pick up the new certificate.
+			// See docs/decisions/0003-no-live-reload-external-cert.md.
+			tlsCert, err := tls.LoadX509KeyPair(cfg.Bootstrap.CertPath, cfg.Bootstrap.KeyPath)
+			if err != nil {
+				return fmt.Errorf("loading external TLS certificate: %w", err)
+			}
+			srv.SetCertificate(&tlsCert)
+			log.Info("external certificate loaded",
+				"cert_path", cfg.Bootstrap.CertPath,
+				"key_path", cfg.Bootstrap.KeyPath,
+			)
 		}
-		srv.SetCertificate(tlsCert)
-
-		// Start renewal loop (uses the same manager so onRenew fires on reload).
-		renewCtx, renewCancel := context.WithCancel(context.Background())
-		defer renewCancel()
-		mgr.StartRenewalLoop(renewCtx, tlsCert)
 	} else {
-		// Externally-managed certificate: load the keypair from disk once at
-		// startup. cert_path and key_path are validated by config.Load.
-		//
-		// NOTE: there is no live-reload for the external path. If an external
-		// renewer (cert-manager, Ansible cron, etc.) rewrites the files, the
-		// gateway must be restarted to pick up the new certificate.
-		// See docs/decisions/0003-no-live-reload-external-cert.md.
-		tlsCert, err := tls.LoadX509KeyPair(cfg.Bootstrap.CertPath, cfg.Bootstrap.KeyPath)
-		if err != nil {
-			return fmt.Errorf("loading external TLS certificate: %w", err)
-		}
-		srv.SetCertificate(&tlsCert)
-		log.Info("external certificate loaded",
-			"cert_path", cfg.Bootstrap.CertPath,
-			"key_path", cfg.Bootstrap.KeyPath,
+		log.Info("TLS disabled: external termination mode",
+			"base_url", cfg.Server.BaseURL,
+			"listen", cfg.Server.Listen,
 		)
 	}
 
@@ -126,10 +133,14 @@ func run(cfgPath string, log *slog.Logger) error {
 		}
 	}()
 
-	// ── Start HTTPS listener ─────────────────────────────────────────────────
+	// ── Start listener ────────────────────────────────────────────────────────
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.ListenAndServeTLS(cfg.Server.Listen)
+		if cfg.Server.TLSEnabled() {
+			errCh <- srv.ListenAndServeTLS(cfg.Server.Listen)
+		} else {
+			errCh <- srv.ListenAndServe(cfg.Server.Listen)
+		}
 	}()
 
 	// ── Wait for shutdown signal ─────────────────────────────────────────────

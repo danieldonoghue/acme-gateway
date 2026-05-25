@@ -51,20 +51,32 @@ spec:
             - -config
             - /etc/acme-gateway/config.yaml
           ports:
-            - name: https
-              containerPort: 8443
+            - name: {{ if .Values.config.server.tls }}https{{ else }}http{{ end }}
+              containerPort: {{ if .Values.config.server.tls }}8443{{ else }}8080{{ end }}
               protocol: TCP
           {{- with .Values.livenessProbe }}
           livenessProbe:
+            {{- if .httpGet }}
+            {{- mergeOverwrite (deepCopy .) (dict "httpGet" (dict "port" (ternary "https" "http" $.Values.config.server.tls) "scheme" (ternary "HTTPS" "HTTP" $.Values.config.server.tls))) | toYaml | nindent 12 }}
+            {{- else }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with .Values.readinessProbe }}
           readinessProbe:
+            {{- if .httpGet }}
+            {{- mergeOverwrite (deepCopy .) (dict "httpGet" (dict "port" (ternary "https" "http" $.Values.config.server.tls) "scheme" (ternary "HTTPS" "HTTP" $.Values.config.server.tls))) | toYaml | nindent 12 }}
+            {{- else }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with .Values.startupProbe }}
           startupProbe:
+            {{- if .httpGet }}
+            {{- mergeOverwrite (deepCopy .) (dict "httpGet" (dict "port" (ternary "https" "http" $.Values.config.server.tls) "scheme" (ternary "HTTPS" "HTTP" $.Values.config.server.tls))) | toYaml | nindent 12 }}
+            {{- else }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -85,11 +97,12 @@ spec:
             # TLS certificate and key for the HTTPS listener.
             # In bootstrap mode, /etc/acme-gateway/tls/ maps to a subPath of
             # the data PVC so the obtained cert/key survive Pod restarts.
+            # Omitted entirely in external TLS termination mode (config.server.tls: false).
             {{- if .Values.config.bootstrap.enabled }}
             - name: data
               mountPath: /etc/acme-gateway/tls
               subPath: tls
-            {{- else }}
+            {{- else if .Values.config.server.tls }}
             - name: tls
               mountPath: /etc/acme-gateway/tls
               readOnly: true
@@ -116,7 +129,8 @@ spec:
         # In bootstrap mode, /etc/acme-gateway/tls/ is served via a subPath
         # of the data PVC (see volumeMount above) — no separate volume needed.
         # For external cert sources, mount the Secret read-only.
-        {{- if not .Values.config.bootstrap.enabled }}
+        # In external TLS termination mode (config.server.tls: false), omitted.
+        {{- if and (not .Values.config.bootstrap.enabled) .Values.config.server.tls }}
         - name: tls
           secret:
             secretName: {{ include "acme-gateway.tlsSecretName" . }}

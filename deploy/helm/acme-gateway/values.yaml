@@ -42,8 +42,9 @@ securityContext:
 
 # -- Kubernetes Service for the gateway.
 service:
-  # -- LoadBalancer exposes port 443 directly to clients.
-  # Use ClusterIP + an Ingress (TCP passthrough) if preferred.
+  # -- LoadBalancer exposes port 443 directly to clients (default, TLS mode).
+  # Change to ClusterIP and set port: 80 when config.server.tls is false
+  # (external TLS termination via Ingress).
   type: LoadBalancer
   port: 443
   annotations: {}
@@ -55,11 +56,20 @@ service:
 config:
   server:
     # -- Internal container listen address.
-    # Keep at :8443 (non-privileged port). The Service maps 443 → 8443.
-    listen: ":8443"
+    # Leave empty to pick the right default automatically based on server.tls:
+    # :8443 in TLS mode (Service maps 443 → 8443), :8080 in external-termination
+    # mode (Service maps 80 → 8080). Override only when you need a non-standard port.
+    listen: ""
     # -- Public HTTPS URL of the gateway as seen by ACME clients.
     # REQUIRED: must match the TLS certificate's Subject Alternative Name.
+    # Must begin with https:// even when tls is false (ACME clients connect via
+    # https:// through the external terminator; this URL is signed into JWS requests).
     baseURL: "https://acme-gateway.example.com"
+    # -- Set false when TLS is terminated externally (e.g. Ingress controller,
+    # cloud load balancer, or service mesh). The gateway will listen on plain HTTP.
+    # When false: tls.existingSecret, tls.certManager, and config.bootstrap.enabled
+    # must all be unset/false — certificate management is handled externally.
+    tls: true
 
   state:
     dbPath: "/var/lib/acme-gateway/state.db"
@@ -248,6 +258,10 @@ resources:
     memory: 256Mi
 
 # -- Liveness probe — uses the ACME /directory endpoint (no auth required).
+# When config.server.tls is false, the deployment template automatically
+# sets scheme: HTTP and port: http regardless of what is set here.
+# NOTE: probe overrides must keep httpGet as the probe type; switching to
+# tcpSocket or exec will conflict with the automatic httpGet injection.
 livenessProbe:
   httpGet:
     path: /directory
@@ -259,6 +273,7 @@ livenessProbe:
   failureThreshold: 3
 
 # -- Readiness probe.
+# When config.server.tls is false, scheme and port are overridden automatically.
 readinessProbe:
   httpGet:
     path: /directory
@@ -273,6 +288,7 @@ readinessProbe:
 # this probe succeeds. The default allows up to 10 minutes (30 × 20 s) which
 # accommodates the dns-01 bootstrap flow (DNS propagation can take several
 # minutes). Reduce failureThreshold when bootstrap is not used.
+# When config.server.tls is false, scheme and port are overridden automatically.
 startupProbe:
   httpGet:
     path: /directory

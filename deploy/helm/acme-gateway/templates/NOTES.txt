@@ -2,6 +2,7 @@ acme-gateway has been deployed.
 
 Gateway URL: {{ .Values.config.server.baseURL }}
 
+{{- if .Values.config.server.tls }}
 {{- if eq .Values.service.type "LoadBalancer" }}
 
 To get the external IP of the LoadBalancer Service, run:
@@ -37,3 +38,20 @@ To check gateway health (the release image is distroless — no shell or wget):
     deploy/{{ include "acme-gateway.fullname" . }} 8443:8443 &
   curl -sk https://localhost:8443/directory
   kill %1
+{{- else }}
+
+External TLS termination mode — the gateway listens on plain HTTP.
+TLS must be terminated before requests reach this Pod (Ingress controller,
+cloud load balancer, or service mesh). The Service is type {{ .Values.service.type }}
+on port {{ .Values.service.port }}; configure your terminator to proxy to:
+  Service {{ include "acme-gateway.fullname" . }}:{{ .Values.service.port }} (type: {{ .Values.service.type }})
+
+ACME directory endpoint (for client configuration):
+  {{ .Values.config.server.baseURL }}/directory
+
+To check gateway health directly (bypassing the external terminator):
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    deploy/{{ include "acme-gateway.fullname" . }} 8080:8080 &
+  curl -s http://localhost:8080/directory
+  kill %1
+{{- end }}

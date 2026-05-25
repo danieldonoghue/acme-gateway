@@ -8,7 +8,7 @@ metadata:
 data:
   config.yaml: |
 {{ include "acme-gateway.configYaml" . | indent 4 }}
-{{- if .Values.dnsHooks.enabled }}
+{{ if .Values.dnsHooks.enabled -}}
 ---
 apiVersion: v1
 kind: ConfigMap

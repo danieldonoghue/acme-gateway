@@ -12,6 +12,6 @@ keywords:
   - certificate
   - pki
   - tls
-home: https://github.com/your-org/acme-gateway
+home: https://github.com/danieldonoghue/acme-gateway
 sources:
-  - https://github.com/your-org/acme-gateway
+  - https://github.com/danieldonoghue/acme-gateway

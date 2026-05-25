@@ -142,7 +142,7 @@ helm uninstall acme-gateway --namespace acme-gateway
 | `service.type` | `LoadBalancer` | Service type; use `ClusterIP` + Ingress TCP passthrough if preferred |
 | `service.port` | `443` | External port |
 | **Pod** | | |
-| `podSecurityContext.fsGroup` | `100` | GID for volume ownership; matches the `acme` group in the container image |
+| `podSecurityContext.fsGroup` | `65532` | GID for volume ownership; matches the `nonroot` user in the distroless release image (adjust for custom images) |
 | `resources` | _(see values.yaml)_ | Container resource requests/limits |
 | `nodeSelector` | `{}` | |
 | `tolerations` | `[]` | |

@@ -32,6 +32,8 @@ TLS certificate source:
 ACME directory endpoint (for client configuration):
   {{ .Values.config.server.baseURL }}/directory
 
-To check gateway health:
-  kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "acme-gateway.fullname" . }} -- \
-    wget -qO- --no-check-certificate https://localhost:8443/directory
+To check gateway health (the release image is distroless — no shell or wget):
+  kubectl port-forward -n {{ .Release.Namespace }} \
+    deploy/{{ include "acme-gateway.fullname" . }} 8443:8443 &
+  curl -sk https://localhost:8443/directory
+  kill %1

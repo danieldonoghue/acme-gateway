@@ -153,3 +153,20 @@ routing:
 {{- end }}
   default_upstream: {{ .Values.config.routing.defaultUpstream | quote }}
 {{- end }}
+
+{{/*
+Validate that exactly one TLS source is configured.
+Call at the top of the Deployment template to fail fast on misconfiguration.
+*/}}
+{{- define "acme-gateway.validateTLS" -}}
+{{- $sources := list -}}
+{{- if .Values.tls.existingSecret -}}{{- $sources = append $sources "tls.existingSecret" -}}{{- end -}}
+{{- if .Values.tls.certManager.enabled -}}{{- $sources = append $sources "tls.certManager.enabled" -}}{{- end -}}
+{{- if .Values.config.bootstrap.enabled -}}{{- $sources = append $sources "config.bootstrap.enabled" -}}{{- end -}}
+{{- if eq (len $sources) 0 -}}
+{{- fail "acme-gateway: no TLS source configured. Set one of: tls.existingSecret, tls.certManager.enabled=true, or config.bootstrap.enabled=true" -}}
+{{- end -}}
+{{- if gt (len $sources) 1 -}}
+{{- fail (printf "acme-gateway: conflicting TLS sources (%s). Configure exactly one of: tls.existingSecret, tls.certManager.enabled, or config.bootstrap.enabled." (join ", " $sources)) -}}
+{{- end -}}
+{{- end -}}

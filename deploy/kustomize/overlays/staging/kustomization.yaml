@@ -34,6 +34,11 @@ configMapGenerator:
       - config.yaml=config.yaml
 
 generatorOptions:
+  # disableNameSuffixHash keeps ConfigMap/Secret names stable so the base
+  # Deployment references never need patching. Trade-off: Kustomize cannot
+  # detect content changes and trigger automatic rollouts. After updating
+  # config.yaml or TLS files you must run:
+  #   kubectl rollout restart deployment/acme-gateway -n acme-gateway-staging
   disableNameSuffixHash: true
 
 secretGenerator:

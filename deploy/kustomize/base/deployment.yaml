@@ -17,13 +17,12 @@ spec:
         app.kubernetes.io/name: acme-gateway
     spec:
       serviceAccountName: acme-gateway
-      # fsGroup 100 matches the 'acme' system group in the container image
-      # (Alpine addgroup -S assigns GID 100 to the first system group).
-      # Mounted volumes (PVC, secrets) will be group-owned by GID 100,
-      # allowing the acme user to read/write them.
+      # fsGroup must match the GID of the runtime user in the container image.
+      # The published release image (distroless/nonroot) uses UID/GID 65532.
+      # Adjust if you build a custom image with a different GID.
       securityContext:
         runAsNonRoot: true
-        fsGroup: 100
+        fsGroup: 65532
       containers:
         - name: acme-gateway
           # Image is set in each overlay via the `images:` field.

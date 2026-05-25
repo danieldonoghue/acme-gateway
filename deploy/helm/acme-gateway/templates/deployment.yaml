@@ -1,3 +1,4 @@
+{{- include "acme-gateway.validateTLS" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -61,6 +62,10 @@ spec:
           readinessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- with .Values.extraEnv }}
@@ -78,9 +83,17 @@ spec:
               subPath: config.yaml
               readOnly: true
             # TLS certificate and key for the HTTPS listener.
+            # In bootstrap mode, /etc/acme-gateway/tls/ maps to a subPath of
+            # the data PVC so the obtained cert/key survive Pod restarts.
+            {{- if .Values.config.bootstrap.enabled }}
+            - name: data
+              mountPath: /etc/acme-gateway/tls
+              subPath: tls
+            {{- else }}
             - name: tls
               mountPath: /etc/acme-gateway/tls
-              readOnly: {{ not .Values.config.bootstrap.enabled }}
+              readOnly: true
+            {{- end }}
             # Persistent SQLite state database.
             - name: data
               mountPath: /var/lib/acme-gateway
@@ -100,12 +113,10 @@ spec:
         - name: config
           configMap:
             name: {{ include "acme-gateway.fullname" . }}-config
-        # TLS source: bootstrap (emptyDir, gateway writes cert here),
-        # cert-manager / existingSecret (Secret mount, read-only).
-        {{- if .Values.config.bootstrap.enabled }}
-        - name: tls
-          emptyDir: {}
-        {{- else }}
+        # In bootstrap mode, /etc/acme-gateway/tls/ is served via a subPath
+        # of the data PVC (see volumeMount above) — no separate volume needed.
+        # For external cert sources, mount the Secret read-only.
+        {{- if not .Values.config.bootstrap.enabled }}
         - name: tls
           secret:
             secretName: {{ include "acme-gateway.tlsSecretName" . }}

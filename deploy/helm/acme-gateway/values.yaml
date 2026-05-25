@@ -24,12 +24,13 @@ podAnnotations: {}
 podLabels: {}
 
 # -- Pod-level security context.
-# fsGroup 100 matches the 'acme' system group created in the Dockerfile
-# (Alpine addgroup -S allocates GID 100 for the first system group).
-# Adjust if your image uses a different GID.
+# fsGroup must match the GID of the runtime user in the container image.
+# The published release image (distroless/nonroot) uses UID/GID 65532.
+# The development image (Dockerfile, Alpine) uses GID 100.
+# Adjust this if you build a custom image with a different GID.
 podSecurityContext:
   runAsNonRoot: true
-  fsGroup: 100
+  fsGroup: 65532
 
 # -- Container-level security context.
 securityContext:
@@ -76,7 +77,8 @@ config:
     contactEmail: ""
     challenge: "dns-01"
     # -- Paths where the bootstrap process writes (and reads) the server certificate.
-    # Must be writable; when bootstrap.enabled these resolve to the data PVC.
+    # In bootstrap mode, /etc/acme-gateway/tls/ is backed by a subPath of the
+    # data PVC so the obtained cert and key survive Pod restarts.
     certPath: "/etc/acme-gateway/tls/server.crt"
     keyPath: "/etc/acme-gateway/tls/server.key"
     renewBeforeDays: 30
@@ -172,8 +174,12 @@ tls:
 # DNS hook scripts — only required when config.bootstrap.enabled: true.
 # These scripts are mounted at /etc/acme-gateway/hooks/ (mode 0755) and
 # called by the bootstrap process during dns-01 challenge validation.
-# Env vars provided: CERTBOT_DOMAIN, CERTBOT_VALIDATION, CERTBOT_TOKEN.
-# ---------------------------------------------------------------------------
+# Env vars provided: CERTBOT_DOMAIN, CERTBOT_VALIDATION, CERTBOT_TOKEN.#
+# WARNING: the published release image (distroless/nonroot) contains no shell
+# interpreter. Shell-based hook scripts will fail at runtime. Bootstrap mode
+# with shell hooks requires a shell-capable image (e.g. the development
+# Dockerfile, which uses Alpine), or hooks compiled as standalone static
+# binaries built into a custom image.# ---------------------------------------------------------------------------
 dnsHooks:
   enabled: false
   deployScript: |
@@ -260,6 +266,19 @@ readinessProbe:
   periodSeconds: 10
   timeoutSeconds: 5
   failureThreshold: 3
+
+# -- Startup probe. Kubernetes will not start liveness/readiness checks until
+# this probe succeeds. The default allows up to 10 minutes (30 × 20 s) which
+# accommodates the dns-01 bootstrap flow (DNS propagation can take several
+# minutes). Reduce failureThreshold when bootstrap is not used.
+startupProbe:
+  httpGet:
+    path: /directory
+    port: https
+    scheme: HTTPS
+  failureThreshold: 30
+  periodSeconds: 20
+  timeoutSeconds: 5
 
 nodeSelector: {}
 tolerations: []

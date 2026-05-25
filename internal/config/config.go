@@ -24,10 +24,23 @@ type Config struct {
 	Routing  RoutingConfig     `yaml:"routing"`
 }
 
-// ServerConfig controls the HTTPS listener.
+// ServerConfig controls the HTTP(S) listener.
 type ServerConfig struct {
 	Listen  string `yaml:"listen"`
 	BaseURL string `yaml:"base_url"`
+	// TLS enables TLS termination at the gateway. Defaults to true when omitted.
+	// Set to false when TLS is terminated externally (e.g. a Kubernetes Ingress
+	// controller, cloud load balancer, or service mesh) and the gateway receives
+	// plain HTTP. base_url must still begin with https:// because that is the
+	// URL ACME clients use, and it is embedded verbatim in signed JWS requests.
+	TLS *bool `yaml:"tls"`
+}
+
+// TLSEnabled reports whether the server should terminate TLS itself.
+// Returns true when the tls field is omitted (preserving backwards-compatible
+// behaviour) and false only when explicitly set to false.
+func (s *ServerConfig) TLSEnabled() bool {
+	return s.TLS == nil || *s.TLS
 }
 
 // StateConfig points to the SQLite database.
@@ -147,7 +160,11 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("server.base_url must not have a trailing slash")
 	}
 	if cfg.Server.Listen == "" {
-		cfg.Server.Listen = ":443"
+		if cfg.Server.TLSEnabled() {
+			cfg.Server.Listen = ":443"
+		} else {
+			cfg.Server.Listen = ":80"
+		}
 	}
 	if cfg.State.DBPath == "" {
 		return fmt.Errorf("state.db_path is required")
@@ -194,24 +211,39 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate bootstrap upstream if enabled.
-	if cfg.Bootstrap.Enabled {
-		if cfg.Bootstrap.Upstream == "" {
-			return fmt.Errorf("bootstrap.upstream is required when bootstrap is enabled")
+	// TLS-mode-specific validation.
+	if !cfg.Server.TLSEnabled() {
+		// External TLS termination — the gateway listens on plain HTTP.
+		// Certificates are managed entirely by the terminating proxy.
+		if cfg.Bootstrap.Enabled {
+			return fmt.Errorf("bootstrap.enabled cannot be true when server.tls is false: " +
+				"certificate management is unnecessary when TLS is terminated externally")
 		}
-		if _, ok := cfg.Upstreams[cfg.Bootstrap.Upstream]; !ok {
-			return fmt.Errorf("bootstrap.upstream %q not found in upstreams", cfg.Bootstrap.Upstream)
-		}
-		if cfg.Bootstrap.Domain == "" {
-			return fmt.Errorf("bootstrap.domain is required when bootstrap is enabled")
-		}
-		if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
-			return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap is enabled")
+		if !strings.HasPrefix(cfg.Server.BaseURL, "https://") {
+			return fmt.Errorf("server.base_url must begin with https:// even when server.tls is false: " +
+				"ACME clients connect via https:// through the external terminator, " +
+				"and this URL is embedded verbatim in signed JWS requests")
 		}
 	} else {
-		// bootstrap.enabled: false means the operator provides the cert externally.
-		if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
-			return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap.enabled is false (externally-managed cert)")
+		// TLS listener — a certificate must be available at startup.
+		if cfg.Bootstrap.Enabled {
+			if cfg.Bootstrap.Upstream == "" {
+				return fmt.Errorf("bootstrap.upstream is required when bootstrap is enabled")
+			}
+			if _, ok := cfg.Upstreams[cfg.Bootstrap.Upstream]; !ok {
+				return fmt.Errorf("bootstrap.upstream %q not found in upstreams", cfg.Bootstrap.Upstream)
+			}
+			if cfg.Bootstrap.Domain == "" {
+				return fmt.Errorf("bootstrap.domain is required when bootstrap is enabled")
+			}
+			if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
+				return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap is enabled")
+			}
+		} else {
+			// bootstrap.enabled: false — operator supplies the certificate externally.
+			if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
+				return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap.enabled is false (externally-managed cert)")
+			}
 		}
 	}
 

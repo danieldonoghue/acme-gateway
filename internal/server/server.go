@@ -14,7 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-// Server is the ACMEv2 gateway HTTPS server.
+// Server is the ACMEv2 gateway server (HTTPS or plain HTTP).
 type Server struct {
 	handler *Handler
 	log     *slog.Logger
@@ -36,6 +36,27 @@ func (s *Server) SetCertificate(cert *tls.Certificate) {
 	s.certMu.Lock()
 	s.tlsCert = cert
 	s.certMu.Unlock()
+}
+
+// ListenAndServe starts a plain HTTP server on addr.
+// Use this when TLS is terminated externally (e.g. Kubernetes Ingress,
+// cloud load balancer, or service mesh). The gateway still validates the
+// https:// URL embedded in ACME JWS requests against its configured base_url,
+// so request URL integrity (RFC 8555 §6.4) is preserved.
+func (s *Server) ListenAndServe(addr string) error {
+	mux := s.buildRouter()
+
+	s.httpServer = &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      90 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	s.log.Info("HTTP listener starting (TLS terminated externally)", "addr", addr)
+	return s.httpServer.ListenAndServe()
 }
 
 // ListenAndServeTLS starts the HTTPS server on addr using the already-set certificate.

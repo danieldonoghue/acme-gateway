@@ -87,6 +87,9 @@ Used by the ConfigMap template via: include "acme-gateway.configYaml" . | indent
 server:
   listen: {{ .Values.config.server.listen | quote }}
   base_url: {{ .Values.config.server.baseURL | quote }}
+{{- if not .Values.config.server.tls }}
+  tls: false
+{{- end }}
 
 state:
   db_path: {{ .Values.config.state.dbPath | quote }}
@@ -155,19 +158,34 @@ routing:
 {{- end }}
 
 {{/*
-Validate that exactly one TLS source is configured.
+Validate TLS configuration.
+When config.server.tls is true (default): exactly one TLS source must be configured.
+When config.server.tls is false (external termination): no TLS sources may be set.
 Call at the top of the Deployment template to fail fast on misconfiguration.
 */}}
 {{- define "acme-gateway.validateTLS" -}}
-{{- $sources := list -}}
-{{- if .Values.tls.existingSecret -}}{{- $sources = append $sources "tls.existingSecret" -}}{{- end -}}
-{{- if .Values.tls.certManager.enabled -}}{{- $sources = append $sources "tls.certManager.enabled" -}}{{- end -}}
-{{- if .Values.config.bootstrap.enabled -}}{{- $sources = append $sources "config.bootstrap.enabled" -}}{{- end -}}
-{{- if eq (len $sources) 0 -}}
-{{- fail "acme-gateway: no TLS source configured. Set one of: tls.existingSecret, tls.certManager.enabled=true, or config.bootstrap.enabled=true" -}}
-{{- end -}}
-{{- if gt (len $sources) 1 -}}
-{{- fail (printf "acme-gateway: conflicting TLS sources (%s). Configure exactly one of: tls.existingSecret, tls.certManager.enabled, or config.bootstrap.enabled." (join ", " $sources)) -}}
+{{- if .Values.config.server.tls -}}
+  {{- $sources := list -}}
+  {{- if .Values.tls.existingSecret -}}{{- $sources = append $sources "tls.existingSecret" -}}{{- end -}}
+  {{- if .Values.tls.certManager.enabled -}}{{- $sources = append $sources "tls.certManager.enabled" -}}{{- end -}}
+  {{- if .Values.config.bootstrap.enabled -}}{{- $sources = append $sources "config.bootstrap.enabled" -}}{{- end -}}
+  {{- if eq (len $sources) 0 -}}
+  {{- fail "acme-gateway: no TLS source configured. Set one of: tls.existingSecret, tls.certManager.enabled=true, or config.bootstrap.enabled=true" -}}
+  {{- end -}}
+  {{- if gt (len $sources) 1 -}}
+  {{- fail (printf "acme-gateway: conflicting TLS sources (%s). Configure exactly one of: tls.existingSecret, tls.certManager.enabled, or config.bootstrap.enabled." (join ", " $sources)) -}}
+  {{- end -}}
+{{- else -}}
+  {{- /* External TLS termination — no certificate managed at the gateway. */ -}}
+  {{- if .Values.tls.existingSecret -}}
+  {{- fail "acme-gateway: tls.existingSecret must not be set when config.server.tls is false (no TLS listener in external termination mode)" -}}
+  {{- end -}}
+  {{- if .Values.tls.certManager.enabled -}}
+  {{- fail "acme-gateway: tls.certManager.enabled must not be set when config.server.tls is false (no TLS listener in external termination mode)" -}}
+  {{- end -}}
+  {{- if .Values.config.bootstrap.enabled -}}
+  {{- fail "acme-gateway: config.bootstrap.enabled cannot be true when config.server.tls is false" -}}
+  {{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -189,8 +207,12 @@ are lost on every Pod restart, burning CA rate limits each time.
 Hostname extracted from config.server.baseURL for TLS Certificate SANs.
 Strips the scheme and port so e.g. https://acme.example.com:8443 → acme.example.com.
 Safe to use directly as a dnsNames entry.
+Only valid when config.server.tls is true.
 */}}
 {{- define "acme-gateway.certHostname" -}}
+{{- if not .Values.config.server.tls -}}
+{{- fail "acme-gateway: acme-gateway.certHostname is not applicable when config.server.tls is false" -}}
+{{- end -}}
 {{- $host := .Values.config.server.baseURL | regexFind "://([^/:]+)" | trimPrefix "://" -}}
 {{- if not $host -}}
 {{- fail (printf "acme-gateway: cannot extract hostname from config.server.baseURL=%q; expected https://hostname or https://hostname:port" .Values.config.server.baseURL) -}}

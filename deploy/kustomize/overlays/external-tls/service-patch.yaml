@@ -1,0 +1,16 @@
+# Strategic merge patch: change Service from HTTPS/443 to HTTP/80.
+# In external TLS termination mode, the Service is typically ClusterIP
+# sitting behind an Ingress controller that handles TLS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: acme-gateway
+spec:
+  type: ClusterIP
+  ports:
+    - $patch: delete
+      port: 443
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

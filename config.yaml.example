@@ -5,6 +5,14 @@
 server:
   listen: ":443"
   base_url: "https://acme-gateway.internal"
+  # Uncomment the line below to disable TLS termination at the gateway.
+  # Use this when a Kubernetes Ingress controller, cloud load balancer, or
+  # service mesh terminates HTTPS before requests reach this process.
+  # base_url must still begin with https:// — ACME clients connect via https://
+  # through the external terminator, and that URL is signed into JWS requests.
+  # When tls: false, bootstrap must also be disabled and cert_path/key_path
+  # are not required.
+  # tls: false
 
 state:
   db_path: "/var/lib/acme-gateway/state.db"

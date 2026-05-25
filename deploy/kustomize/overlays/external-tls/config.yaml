@@ -1,0 +1,30 @@
+server:
+  listen: ":8080"
+  base_url: "https://acme-gateway.example.com"
+  # TLS is terminated by the Ingress controller / load balancer before
+  # requests reach this Pod. The gateway listens on plain HTTP.
+  # base_url must still begin with https:// because ACME clients connect
+  # via https:// and embed that URL in signed JWS requests (RFC 8555 §6.4).
+  tls: false
+
+state:
+  db_path: "/var/lib/acme-gateway/state.db"
+
+# No bootstrap or cert_path/key_path needed in external TLS termination mode.
+
+upstreams:
+  letsencrypt:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    contact_email: "certadmin@example.com"
+    account_count: 3
+
+profiles:
+  tlsserver: "TLS server certificate via Let's Encrypt"
+
+routing:
+  rules:
+    - match:
+        profile: "tlsserver"
+      upstream: letsencrypt
+      upstream_profile: "tlsserver"
+  default_upstream: letsencrypt

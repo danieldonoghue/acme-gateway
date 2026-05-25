@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -483,5 +484,134 @@ routing:
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for bootstrap.enabled=false with missing cert_path/key_path")
+	}
+}
+
+// External TLS termination mode tests.
+
+func TestLoad_ExternalTLS_ValidConfig(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+  tls: false
+state:
+  db_path: "/tmp/test.db"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error for valid external-TLS config: %v", err)
+	}
+	if got.Server.TLSEnabled() {
+		t.Error("TLSEnabled() should be false when tls: false")
+	}
+	// Default listen should be :80 in external-TLS mode.
+	if got.Server.Listen != ":80" {
+		t.Errorf("Server.Listen = %q, want %q", got.Server.Listen, ":80")
+	}
+}
+
+func TestLoad_ExternalTLS_HTTPBaseURL(t *testing.T) {
+	cfg := `
+server:
+  base_url: "http://acme-gateway.internal"
+  tls: false
+state:
+  db_path: "/tmp/test.db"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: base_url must begin with https:// even in external-TLS mode")
+	}
+	if !strings.Contains(err.Error(), "https://") {
+		t.Errorf("error message should mention https://, got: %v", err)
+	}
+}
+
+func TestLoad_ExternalTLS_BootstrapEnabled(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+  tls: false
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  enabled: true
+  upstream: le
+  domain: "acme-gateway.internal"
+  cert_path: "/etc/tls.crt"
+  key_path:  "/etc/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: bootstrap.enabled=true is incompatible with tls: false")
+	}
+	if !strings.Contains(err.Error(), "bootstrap") {
+		t.Errorf("error message should mention bootstrap, got: %v", err)
+	}
+}
+
+func TestLoad_ExternalTLS_DefaultListen(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+  tls: false
+state:
+  db_path: "/tmp/test.db"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Server.Listen != ":80" {
+		t.Errorf("default listen in external-TLS mode = %q, want %q", got.Server.Listen, ":80")
+	}
+}
+
+func TestLoad_TLSEnabled_DefaultListen(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Server.Listen != ":443" {
+		t.Errorf("default listen in TLS mode = %q, want %q", got.Server.Listen, ":443")
 	}
 }

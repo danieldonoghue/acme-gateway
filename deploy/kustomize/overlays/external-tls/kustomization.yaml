@@ -1,0 +1,64 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ---------------------------------------------------------------------------
+# External TLS termination overlay for acme-gateway.
+#
+# Use this overlay when TLS is terminated by an Ingress controller, cloud
+# load balancer, or service mesh before requests reach the gateway Pod.
+# The gateway listens on plain HTTP (:8080); ACME clients still connect via
+# https:// through the terminating proxy.
+#
+# Before applying, you MUST:
+#   1. Edit config.yaml — set base_url, upstreams, routing, etc.
+#   2. Replace newName/newTag in the images block with your actual image.
+#   3. Create an Ingress (or equivalent) that:
+#        - terminates TLS for the hostname in base_url
+#        - proxies to Service acme-gateway:80 in this namespace
+#      NOTE: an Ingress resource is NOT included here because its exact form
+#      depends on your Ingress controller (nginx, Traefik, AWS ALB, etc.).
+#      See deploy/README.md for guidance.
+#
+# Apply with:
+#   kubectl apply -k deploy/kustomize/overlays/external-tls
+# ---------------------------------------------------------------------------
+
+namespace: acme-gateway
+
+resources:
+  - ../../base
+
+# ---------------------------------------------------------------------------
+# Image — replace with your actual registry and tag.
+# ---------------------------------------------------------------------------
+images:
+  - name: acme-gateway
+    newName: ghcr.io/danieldonoghue/acme-gateway
+    newTag: v0.0.2
+
+# ---------------------------------------------------------------------------
+# ConfigMap: acme-gateway-config
+# ---------------------------------------------------------------------------
+configMapGenerator:
+  - name: acme-gateway-config
+    files:
+      - config.yaml=config.yaml
+
+generatorOptions:
+  # Keep names stable so the base Deployment references never need patching.
+  # After updating config.yaml, run:
+  #   kubectl rollout restart deployment/acme-gateway -n acme-gateway
+  disableNameSuffixHash: true
+
+# ---------------------------------------------------------------------------
+# Patches
+# ---------------------------------------------------------------------------
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: acme-gateway
+  - path: service-patch.yaml
+    target:
+      kind: Service
+      name: acme-gateway

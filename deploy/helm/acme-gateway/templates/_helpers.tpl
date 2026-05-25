@@ -84,8 +84,12 @@ Render the full config.yaml content (un-indented).
 Used by the ConfigMap template via: include "acme-gateway.configYaml" . | indent 4
 */}}
 {{- define "acme-gateway.configYaml" -}}
+{{- $listen := .Values.config.server.listen -}}
+{{- if not $listen -}}
+{{- $listen = ternary ":8443" ":8080" .Values.config.server.tls -}}
+{{- end -}}
 server:
-  listen: {{ .Values.config.server.listen | quote }}
+  listen: {{ $listen | quote }}
   base_url: {{ .Values.config.server.baseURL | quote }}
 {{- if not .Values.config.server.tls }}
   tls: false

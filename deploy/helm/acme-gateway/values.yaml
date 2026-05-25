@@ -56,9 +56,10 @@ service:
 config:
   server:
     # -- Internal container listen address.
-    # Keep at :8443 (non-privileged port) for TLS mode. The Service maps 443 → 8443.
-    # Change to :8080 when server.tls is false (external TLS termination).
-    listen: ":8443"
+    # Leave empty to pick the right default automatically based on server.tls:
+    # :8443 in TLS mode (Service maps 443 → 8443), :8080 in external-termination
+    # mode (Service maps 80 → 8080). Override only when you need a non-standard port.
+    listen: ""
     # -- Public HTTPS URL of the gateway as seen by ACME clients.
     # REQUIRED: must match the TLS certificate's Subject Alternative Name.
     # Must begin with https:// even when tls is false (ACME clients connect via

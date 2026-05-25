@@ -60,7 +60,7 @@ In `overlays/production/kustomization.yaml`, replace the placeholder with your a
 images:
   - name: acme-gateway
     newName: ghcr.io/danieldonoghue/acme-gateway
-    newTag: v0.0.2
+    newTag: v0.0.3
 ```
 
 ### 3. Provide the TLS certificate

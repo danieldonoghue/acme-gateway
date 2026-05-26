@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -67,10 +68,26 @@ type acmeProblem struct {
 	Detail string `json:"detail"`
 }
 
+type accountKeyAlgorithm string
+
+const (
+	accountKeyECDSA accountKeyAlgorithm = "ecdsa"
+	accountKeyRSA   accountKeyAlgorithm = "rsa"
+)
+
+type csrKeyAlgorithm string
+
+const (
+	csrKeyECDSA csrKeyAlgorithm = "ecdsa"
+	csrKeyRSA   csrKeyAlgorithm = "rsa"
+)
+
 // acmeClient implements a minimal ACME client for testing.
 type acmeClient struct {
 	dir    acmeDirectory
-	key    *ecdsa.PrivateKey
+	key    interface{}
+	alg    jose.SignatureAlgorithm
+	jwkAlg string
 	kidURL string // empty until account is registered
 	hc     *http.Client
 }
@@ -78,10 +95,35 @@ type acmeClient struct {
 // newACMEClient creates an ACME client pointing at baseURL, trusting trustPool.
 func newACMEClient(t *testing.T, baseURL string, trustPool *x509.CertPool) *acmeClient {
 	t.Helper()
+	return newACMEClientWithAccountKey(t, baseURL, trustPool, accountKeyECDSA)
+}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+// newACMEClientWithAccountKey creates an ACME client with a selectable
+// account key algorithm (ECDSA or RSA) for JWS signing.
+func newACMEClientWithAccountKey(t *testing.T, baseURL string, trustPool *x509.CertPool, keyAlg accountKeyAlgorithm) *acmeClient {
+	t.Helper()
+
+	var (
+		key interface{}
+		alg jose.SignatureAlgorithm
+		jwk string
+		err error
+	)
+
+	switch keyAlg {
+	case accountKeyECDSA:
+		key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		alg = jose.ES256
+		jwk = string(jose.ES256)
+	case accountKeyRSA:
+		key, err = rsa.GenerateKey(rand.Reader, 2048)
+		alg = jose.RS256
+		jwk = string(jose.RS256)
+	default:
+		t.Fatalf("unsupported account key algorithm %q", keyAlg)
+	}
 	if err != nil {
-		t.Fatalf("generate key: %v", err)
+		t.Fatalf("generate account key: %v", err)
 	}
 
 	hc := &http.Client{
@@ -91,7 +133,7 @@ func newACMEClient(t *testing.T, baseURL string, trustPool *x509.CertPool) *acme
 		Timeout: 30 * time.Second,
 	}
 
-	c := &acmeClient{key: key, hc: hc}
+	c := &acmeClient{key: key, alg: alg, jwkAlg: jwk, hc: hc}
 	c.fetchDirectory(t, baseURL)
 	return c
 }
@@ -147,7 +189,7 @@ func (c *acmeClient) sign(t *testing.T, url string, payload interface{}) []byte 
 	t.Helper()
 	nonce := c.freshNonce(t)
 
-	sigKey := jose.SigningKey{Algorithm: jose.ES256, Key: c.key}
+	sigKey := jose.SigningKey{Algorithm: c.alg, Key: c.key}
 	opts := new(jose.SignerOptions).
 		WithHeader("nonce", nonce).
 		WithHeader("url", url)
@@ -155,9 +197,13 @@ func (c *acmeClient) sign(t *testing.T, url string, payload interface{}) []byte 
 	if c.kidURL != "" {
 		opts = opts.WithHeader("kid", c.kidURL)
 	} else {
+		pubKey, err := accountPublicKey(c.key)
+		if err != nil {
+			t.Fatalf("account public key: %v", err)
+		}
 		jwk := jose.JSONWebKey{
-			Key:       c.key.Public(),
-			Algorithm: string(jose.ES256),
+			Key:       pubKey,
+			Algorithm: c.jwkAlg,
 			Use:       "sig",
 		}
 		opts = opts.WithHeader("jwk", jwk)
@@ -209,9 +255,21 @@ func (c *acmeClient) register(t *testing.T) string {
 // newOrder creates a new ACME order for domain.
 func (c *acmeClient) newOrder(t *testing.T, domain string) (acmeOrder, string) {
 	t.Helper()
-	resp := c.post(t, c.dir.NewOrder, map[string]interface{}{
+	return c.newOrderWithProfile(t, domain, "")
+}
+
+// newOrderWithProfile creates a new ACME order and optionally sets an ACME
+// profile value in the newOrder payload.
+func (c *acmeClient) newOrderWithProfile(t *testing.T, domain, profile string) (acmeOrder, string) {
+	t.Helper()
+	payload := map[string]interface{}{
 		"identifiers": []acmeID{{Type: "dns", Value: domain}},
-	})
+	}
+	if profile != "" {
+		payload["profile"] = profile
+	}
+
+	resp := c.post(t, c.dir.NewOrder, payload)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
@@ -291,17 +349,15 @@ func (c *acmeClient) pollOrder(t *testing.T, orderURL string) acmeOrder {
 // order until a certificate URL is available. Returns the certificate URL.
 func (c *acmeClient) finalize(t *testing.T, finalizeURL, orderURL, domain string) string {
 	t.Helper()
+	return c.finalizeWithCSRKey(t, finalizeURL, orderURL, domain, csrKeyECDSA)
+}
 
-	// Generate CSR key and request.
-	csrKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate CSR key: %v", err)
-	}
-	csrTmpl := &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: domain},
-		DNSNames: []string{domain},
-	}
-	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTmpl, csrKey)
+// finalizeWithCSRKey finalizes an order using a CSR created with the selected
+// key algorithm.
+func (c *acmeClient) finalizeWithCSRKey(t *testing.T, finalizeURL, orderURL, domain string, keyAlg csrKeyAlgorithm) string {
+	t.Helper()
+
+	csrDER, err := createCSRDER(t, domain, keyAlg)
 	if err != nil {
 		t.Fatalf("create CSR: %v", err)
 	}
@@ -331,6 +387,43 @@ func (c *acmeClient) finalize(t *testing.T, finalizeURL, orderURL, domain string
 		t.Fatal("order valid but no certificate URL")
 	}
 	return order.Certificate
+}
+
+func createCSRDER(t *testing.T, domain string, keyAlg csrKeyAlgorithm) ([]byte, error) {
+	t.Helper()
+
+	csrTmpl := &x509.CertificateRequest{
+		Subject:  pkix.Name{CommonName: domain},
+		DNSNames: []string{domain},
+	}
+
+	switch keyAlg {
+	case csrKeyECDSA:
+		csrKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate ECDSA CSR key: %w", err)
+		}
+		return x509.CreateCertificateRequest(rand.Reader, csrTmpl, csrKey)
+	case csrKeyRSA:
+		csrKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return nil, fmt.Errorf("generate RSA CSR key: %w", err)
+		}
+		return x509.CreateCertificateRequest(rand.Reader, csrTmpl, csrKey)
+	default:
+		return nil, fmt.Errorf("unsupported CSR key algorithm %q", keyAlg)
+	}
+}
+
+func accountPublicKey(key interface{}) (interface{}, error) {
+	switch k := key.(type) {
+	case *ecdsa.PrivateKey:
+		return k.Public(), nil
+	case *rsa.PrivateKey:
+		return k.Public(), nil
+	default:
+		return nil, fmt.Errorf("unsupported account key type %T", key)
+	}
 }
 
 // fetchCert retrieves the certificate chain at certURL using POST-as-GET.

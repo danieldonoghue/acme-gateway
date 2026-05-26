@@ -705,10 +705,14 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 
 	csrKeyType, err := csrKeyTypeFromDER(csrDER)
 	if err != nil {
-		h.writeError(w, errMalformed("invalid csr"))
-		return
-	}
-	if acct.KeyType != "" && csrKeyType != "" && acct.KeyType != csrKeyType {
+		h.log.Warn("unable to parse csr key type",
+			"account_id", acct.ID,
+			"order_id", order.ID,
+			"profile", order.Profile,
+			"upstream_id", order.UpstreamID,
+			"err", err,
+		)
+	} else if acct.KeyType != "" && csrKeyType != "" && acct.KeyType != csrKeyType {
 		h.log.Warn("csr/account key type mismatch",
 			"account_id", acct.ID,
 			"order_id", order.ID,

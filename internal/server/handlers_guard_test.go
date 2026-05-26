@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -53,6 +54,29 @@ func TestCSRKeyTypeFromDER_RSA(t *testing.T) {
 	}
 	if got != "RSA" {
 		t.Fatalf("csr key type = %q, want RSA", got)
+	}
+}
+
+func TestCSRKeyTypeFromDER_Ed25519(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject:  pkix.Name{CommonName: "example.internal"},
+		DNSNames: []string{"example.internal"},
+	}, key)
+	if err != nil {
+		t.Fatalf("CreateCertificateRequest: %v", err)
+	}
+
+	got, err := csrKeyTypeFromDER(der)
+	if err != nil {
+		t.Fatalf("csrKeyTypeFromDER: %v", err)
+	}
+	if got != "Ed25519" {
+		t.Fatalf("csr key type = %q, want Ed25519", got)
 	}
 }
 

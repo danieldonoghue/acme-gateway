@@ -156,6 +156,14 @@ var (
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
+	return newHarnessWithConfig(t, nil)
+}
+
+// newHarnessWithConfig starts a fresh gateway and allows callers to mutate the
+// in-memory config before components are initialised.
+func newHarnessWithConfig(t *testing.T, mutate func(*config.Config)) *harness {
+	t.Helper()
+
 	dir := t.TempDir()
 
 	// ── Self-signed TLS cert for the gateway ──────────────────────────────────
@@ -206,6 +214,9 @@ func newHarness(t *testing.T) *harness {
 		Routing: config.RoutingConfig{
 			DefaultUpstream: "pebble",
 		},
+	}
+	if mutate != nil {
+		mutate(cfg)
 	}
 
 	// ── Initialise gateway components ─────────────────────────────────────────

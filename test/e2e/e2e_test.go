@@ -3,8 +3,12 @@
 package e2e_test
 
 import (
+	"context"
 	"os"
+	"strings"
 	"testing"
+
+	"github.com/danieldonoghue/acme-gateway/internal/config"
 )
 
 // TestPebbleFullFlow exercises the complete RFC 8555 certificate issuance flow
@@ -74,6 +78,110 @@ func TestPebbleFullFlow(t *testing.T) {
 	certs := parseCerts(t, certPEM)
 	t.Logf("received %d certificate(s); leaf CN=%q", len(certs), certs[0].Subject.CommonName)
 	assertCertSANs(t, certs, domain)
+}
+
+// TestRoutingUsesAccountKeyTypeNotCSR verifies the current routing behaviour:
+// key_type matching is based on account key algorithm at newOrder time, while
+// CSR key algorithm is only available later at finalize.
+func TestRoutingUsesAccountKeyTypeNotCSR(t *testing.T) {
+	h := newHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.Upstreams = map[string]config.UpstreamConfig{
+			"pebble-rsa": {
+				DirectoryURL: "https://127.0.0.1:14000/dir",
+				ContactEmail: "test@example.invalid",
+				CACertPath:   sharedPebbleTLSCAFile,
+			},
+			"pebble-ecdsa": {
+				DirectoryURL: "https://127.0.0.1:14000/dir",
+				ContactEmail: "test@example.invalid",
+				CACertPath:   sharedPebbleTLSCAFile,
+			},
+		}
+		cfg.Profiles = map[string]string{
+			"tlsclient": "Client cert profile",
+		}
+		cfg.Routing = config.RoutingConfig{
+			Rules: []config.RoutingRule{
+				{Match: config.MatchConfig{Profile: "tlsclient", KeyType: "RSA"}, Upstream: "pebble-rsa"},
+				{Match: config.MatchConfig{Profile: "tlsclient", KeyType: "ECDSA"}, Upstream: "pebble-ecdsa"},
+			},
+			DefaultUpstream: "pebble-rsa",
+		}
+	})
+
+	testCases := []struct {
+		name          string
+		accountKeyAlg accountKeyAlgorithm
+		csrKeyAlg     csrKeyAlgorithm
+		wantUpstream  string
+	}{
+		{
+			name:          "ecdsa_account_routes_to_ecdsa_even_with_rsa_csr",
+			accountKeyAlg: accountKeyECDSA,
+			csrKeyAlg:     csrKeyRSA,
+			wantUpstream:  "pebble-ecdsa",
+		},
+		{
+			name:          "rsa_account_routes_to_rsa_even_with_ecdsa_csr",
+			accountKeyAlg: accountKeyRSA,
+			csrKeyAlg:     csrKeyECDSA,
+			wantUpstream:  "pebble-rsa",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			client := newACMEClientWithAccountKey(t, h.GatewayURL, h.TrustPool, tc.accountKeyAlg)
+
+			client.register(t)
+
+			domain := "gateway-" + strings.ReplaceAll(tc.name, "_", "-") + ".example.invalid"
+			order, orderURL := client.newOrderWithProfile(t, domain, "tlsclient")
+
+			orderID := orderIDFromURL(t, orderURL)
+			storedOrder, err := h.st.GetOrder(context.Background(), orderID)
+			if err != nil {
+				t.Fatalf("GetOrder(%s): %v", orderID, err)
+			}
+			if storedOrder == nil {
+				t.Fatalf("order %s not found in store", orderID)
+			}
+			if storedOrder.UpstreamID != tc.wantUpstream {
+				t.Fatalf("upstream mismatch: got %q, want %q", storedOrder.UpstreamID, tc.wantUpstream)
+			}
+
+			for _, authzURL := range order.Authorizations {
+				authz := client.getAuthz(t, authzURL)
+				if authz.Status == "valid" {
+					continue
+				}
+				if len(authz.Challenges) == 0 {
+					t.Fatalf("authz has no challenges for %s", authzURL)
+				}
+				client.triggerChallenge(t, authz.Challenges[0].URL)
+			}
+
+			order = client.pollOrder(t, orderURL)
+			if order.Status != "ready" && order.Status != "valid" {
+				t.Fatalf("expected order status ready or valid, got %q", order.Status)
+			}
+
+			certURL := client.finalizeWithCSRKey(t, order.Finalize, orderURL, domain, tc.csrKeyAlg)
+			certs := parseCerts(t, client.fetchCert(t, certURL))
+			assertCertSANs(t, certs, domain)
+		})
+	}
+}
+
+func orderIDFromURL(t *testing.T, orderURL string) string {
+	t.Helper()
+
+	idx := strings.LastIndex(orderURL, "/")
+	if idx < 0 || idx == len(orderURL)-1 {
+		t.Fatalf("could not parse order ID from URL %q", orderURL)
+	}
+	return orderURL[idx+1:]
 }
 
 // TestPebbleNewNonce verifies that the gateway correctly proxies replay nonces

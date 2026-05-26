@@ -703,6 +703,22 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	csrKeyType, err := csrKeyTypeFromDER(csrDER)
+	if err != nil {
+		h.writeError(w, errMalformed("invalid csr"))
+		return
+	}
+	if acct.KeyType != "" && csrKeyType != "" && acct.KeyType != csrKeyType {
+		h.log.Warn("csr/account key type mismatch",
+			"account_id", acct.ID,
+			"order_id", order.ID,
+			"profile", order.Profile,
+			"upstream_id", order.UpstreamID,
+			"account_key_type", acct.KeyType,
+			"csr_key_type", csrKeyType,
+		)
+	}
+
 	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
@@ -1032,6 +1048,29 @@ func leafCertFingerprint(pemChain []byte) (string, bool) {
 func sha256sum(b []byte) []byte {
 	h := sha256.Sum256(b)
 	return h[:]
+}
+
+// csrKeyTypeFromDER parses a DER CSR and returns the public key algorithm as
+// "RSA", "ECDSA", "Ed25519", or "" for unknown types.
+func csrKeyTypeFromDER(csrDER []byte) (string, error) {
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		return "", err
+	}
+	return certRequestKeyType(csr), nil
+}
+
+func certRequestKeyType(csr *x509.CertificateRequest) string {
+	switch csr.PublicKey.(type) {
+	case *rsa.PublicKey:
+		return "RSA"
+	case *ecdsa.PublicKey:
+		return "ECDSA"
+	case ed25519.PublicKey:
+		return "Ed25519"
+	default:
+		return ""
+	}
 }
 
 // jwkMatchesCertKey reports whether jwk contains the same public key as cert.

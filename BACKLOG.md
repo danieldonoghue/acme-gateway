@@ -19,7 +19,7 @@
 ### Medium Priority
 
 #### Account Key Rollover Support
-- **Issue**: Key rotation endpoint (`POST /key-change`) currently returns 501 "not supported"
+- **Issue**: Key rotation endpoint (`POST /key-change`) currently returns 500 (Internal Server Error)
 - **RFC Requirement**: RFC 8555 §7.3.6 specifies account key rollover support
 - **Current State**: Endpoint is advertised but not implemented
 - **Implementation Notes**:

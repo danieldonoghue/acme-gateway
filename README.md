@@ -4,11 +4,13 @@ An ACMEv2 (RFC 8555) gateway that presents a standard ACME server to any ACME cl
 
 ## RFC 8555 Compliance
 
-acme-gateway is a strict RFC 8555 (ACME) compliant implementation. Key conformance points include:
+acme-gateway implements the core ACME issuance flow with RFC 8555 compliance for supported operations. Key conformance points include:
 - Challenge responses include both `rel="index"` and `rel="up"` Link headers (RFC 8555 §7.1, §7.5.1)
 - All ACME resources are properly linked to their parent resources via Link headers
 - Full support for identifier validation challenges (http-01, dns-01)
 - Account key binding and anti-replay protection via nonce and JWS
+
+**Note**: The gateway does not implement all RFC 8555 endpoints. See [BACKLOG.md](BACKLOG.md) for a list of unsupported operations (account deactivation, key rollover, etc.).
 
 The gateway is tested against Pebble (IETF ACME test suite) to ensure compatibility with standard ACME clients like certbot.
 

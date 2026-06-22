@@ -116,9 +116,12 @@ func (h *Handler) gatewayAuthzURLForChallenge(
 		return "", fmt.Errorf("listing authorization resources: %w", err)
 	}
 
+	var lastErr error
 	for _, authzRM := range authzResources {
 		upAuthz, err := client.GetAuthorization(ctx, authzRM.UpstreamURL)
 		if err != nil {
+			lastErr = err
+			h.log.DebugContext(ctx, "failed to get upstream authorization", "url", authzRM.UpstreamURL, "error", err)
 			continue
 		}
 		for _, upChal := range upAuthz.Challenges {
@@ -128,6 +131,9 @@ func (h *Handler) gatewayAuthzURLForChallenge(
 		}
 	}
 
+	if lastErr != nil {
+		return "", fmt.Errorf("failed to resolve challenge authorization: %w", lastErr)
+	}
 	return "", fmt.Errorf("parent authorization not found for challenge")
 }
 

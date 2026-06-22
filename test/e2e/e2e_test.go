@@ -85,7 +85,6 @@ func TestPebbleFullFlow(t *testing.T) {
 // RFC 8555 §7.1 specifies that rel="up" links challenge resources to their
 // parent authorization, which clients like certbot require for proper protocol flow.
 func TestChallengeResponseLinkHeaders(t *testing.T) {
-	t.Helper()
 	h := newHarness(t)
 
 	client := newACMEClient(t, h.GatewayURL, h.TrustPool)

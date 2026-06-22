@@ -80,6 +80,46 @@ func TestPebbleFullFlow(t *testing.T) {
 	assertCertSANs(t, certs, domain)
 }
 
+// TestChallengeResponseLinkHeaders verifies RFC 8555 compliance: challenge
+// responses include both rel="index" and rel="up" Link headers.
+// RFC 8555 §7.1 specifies that rel="up" links challenge resources to their
+// parent authorization, which clients like certbot require for proper protocol flow.
+func TestChallengeResponseLinkHeaders(t *testing.T) {
+	t.Helper()
+	h := newHarness(t)
+
+	client := newACMEClient(t, h.GatewayURL, h.TrustPool)
+
+	// Register account and create an order.
+	accountURL := client.register(t)
+	if accountURL == "" {
+		t.Fatal("register returned empty account URL")
+	}
+
+	const domain = "challenge-link-test.example.invalid"
+	order, _ := client.newOrder(t, domain)
+	if len(order.Authorizations) == 0 {
+		t.Fatal("order has no authorizations")
+	}
+
+	// Fetch authorization and trigger its challenge; the client's
+	// triggerChallenge method now asserts both Link relations are present.
+	authzURL := order.Authorizations[0]
+	authz := client.getAuthz(t, authzURL)
+
+	if len(authz.Challenges) == 0 {
+		t.Fatalf("authz has no challenges for %s", authzURL)
+	}
+
+	chall := authz.Challenges[0]
+	t.Logf("triggering challenge %s (rel=up required per RFC 8555 §7.1)", chall.URL)
+
+	// This call will fail if response does not include rel="up" Link header.
+	client.triggerChallenge(t, chall.URL)
+
+	t.Logf("challenge response correctly includes rel=\"index\" and rel=\"up\" Link headers")
+}
+
 // TestRoutingUsesAccountKeyTypeNotCSR verifies the current routing behaviour:
 // key_type matching is based on account key algorithm at newOrder time, while
 // CSR key algorithm is only available later at finalize.

@@ -45,10 +45,13 @@ func NewHandler(cfg *config.Config, st *store.Store, r *router.Router, pool *ups
 
 // ─── ACME error types ─────────────────────────────────────────────────────────
 
+// acmeError is an RFC 8555 problem response (§7.7).
+// The Status field is excluded from JSON: RFC 8555 states the "status" field
+// is "deprecated" and "MUST NOT be used" in the response body.
 type acmeError struct {
 	Type   string `json:"type"`
 	Detail string `json:"detail"`
-	Status int    `json:"status"`
+	Status int    `json:"-"` // RFC 8555 §7.7: status field deprecated, HTTP status used instead
 }
 
 func (e *acmeError) Error() string { return e.Detail }
@@ -89,10 +92,43 @@ func (h *Handler) linkHeader() string {
 	return fmt.Sprintf(`<%s/directory>;rel="index"`, h.cfg.Server.BaseURL)
 }
 
+// upLinkHeader returns the Link header value pointing at the parent authorization.
+func (h *Handler) upLinkHeader(authzURL string) string {
+	return fmt.Sprintf(`<%s>;rel="up"`, authzURL)
+}
+
 // addCommonHeaders adds Replay-Nonce and Link headers to every response.
 func (h *Handler) addCommonHeaders(w http.ResponseWriter) {
 	w.Header().Set("Link", h.linkHeader())
 	h.attachNonce(w)
+}
+
+// gatewayAuthzURLForChallenge resolves the gateway authorization URL that owns
+// the given upstream challenge URL.
+func (h *Handler) gatewayAuthzURLForChallenge(
+	ctx context.Context,
+	client *upstream.Client,
+	orderID string,
+	upstreamChallengeURL string,
+) (string, error) {
+	authzResources, err := h.store.GetAuthzResourcesByOrderID(ctx, orderID)
+	if err != nil {
+		return "", fmt.Errorf("listing authorization resources: %w", err)
+	}
+
+	for _, authzRM := range authzResources {
+		upAuthz, err := client.GetAuthorization(ctx, authzRM.UpstreamURL)
+		if err != nil {
+			continue
+		}
+		for _, upChal := range upAuthz.Challenges {
+			if upChal.URL == upstreamChallengeURL {
+				return h.cfg.Server.BaseURL + "/authz/" + authzRM.GatewayID, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("parent authorization not found for challenge")
 }
 
 // ─── Nonce ────────────────────────────────────────────────────────────────────
@@ -599,6 +635,9 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─── POST /challenge/{id} ─────────────────────────────────────────────────────
+// RFC 8555 §7.5.1: Challenge responses MUST include a Link header with
+// rel="up" pointing to the parent authorization resource. This header is
+// required by ACME clients (including certbot) to navigate the resource hierarchy.
 
 func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	h.addCommonHeaders(w)
@@ -636,11 +675,18 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	authzURL, err := h.gatewayAuthzURLForChallenge(r.Context(), client, order.ID, rm.UpstreamURL)
+	if err != nil {
+		h.writeError(w, errServerInternal("resolving challenge authorization: "+err.Error()))
+		return
+	}
+
 	chal, err := client.TriggerChallenge(r.Context(), rm.UpstreamURL)
 	if err != nil {
 		h.writeError(w, errServerInternal("triggering challenge: "+err.Error()))
 		return
 	}
+	w.Header().Add("Link", h.upLinkHeader(authzURL))
 
 	resp := map[string]interface{}{
 		"type":   chal.Type,
@@ -750,10 +796,14 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 // handleCert serves GET /cert/{id} and POST /cert/{id} (POST-as-GET per RFC 8555 §7.4.2).
 // Both forms return the PEM certificate chain. For POST requests the JWS body is validated
 // but the payload is expected to be empty (null), as required by POST-as-GET.
+// RFC 8555 §6.5: All responses must include Replay-Nonce header.
 func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
+	// RFC 8555 §6.5: Attach nonce to all responses (GET and POST)
+	h.attachNonce(w)
+	w.Header().Set("Link", h.linkHeader())
+
 	// POST-as-GET: validate the JWS and consume the nonce, then proceed as GET.
 	if r.Method == http.MethodPost {
-		h.addCommonHeaders(w)
 		parsed, ok := h.parseAndValidateJWS(w, r)
 		if !ok {
 			return

@@ -40,7 +40,9 @@ func buildDirectory(baseURL string, profiles map[string]string) *directoryRespon
 }
 
 // handleDirectory serves GET /directory.
+// RFC 8555 §6.5 requires all responses include Replay-Nonce header.
 func (h *Handler) handleDirectory(w http.ResponseWriter, r *http.Request) {
+	h.attachNonce(w)
 	dir := buildDirectory(h.cfg.Server.BaseURL, h.cfg.Profiles)
 	writeJSON(w, http.StatusOK, dir)
 }

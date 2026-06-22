@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,6 +318,24 @@ func (c *acmeClient) triggerChallenge(t *testing.T, challURL string) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("triggerChallenge: unexpected status %d: %s", resp.StatusCode, body)
 	}
+
+	linkValues := resp.Header.Values("Link")
+	if !hasLinkRelation(linkValues, "index") {
+		t.Fatalf("triggerChallenge: missing Link rel=\"index\" header: %v", linkValues)
+	}
+	if !hasLinkRelation(linkValues, "up") {
+		t.Fatalf("triggerChallenge: missing Link rel=\"up\" header: %v", linkValues)
+	}
+}
+
+func hasLinkRelation(linkValues []string, rel string) bool {
+	needle := `rel="` + rel + `"`
+	for _, v := range linkValues {
+		if strings.Contains(v, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // pollOrder polls an order URL until its status is no longer "pending" or

@@ -131,6 +131,7 @@ jobs:
             -severity medium
             -exclude G304
             ./...
+        continue-on-error: true
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v4

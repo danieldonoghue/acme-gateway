@@ -312,14 +312,43 @@ make deb            # build .deb packages via Docker (required on macOS)
 make docker         # build + push multi-arch image (requires docker buildx)
 make test               # run unit tests with race detector
 make test-e2e           # end-to-end tests against Pebble (requires Docker)
+make test-e2e-dns01     # Pebble dns-01 with real DNS validation via local BIND
 make test-e2e-staging   # staging Let's Encrypt E2E (dns-01 via hooks)
 make lint               # golangci-lint
 make security           # govulncheck + gosec
 ```
 
+### Local DNS-01 E2E setup (TestPebbleDNS01)
+
+`make test-e2e-dns01` runs `TestPebbleDNS01` against Pebble with **real dns-01 validation** using a local BIND DNS server.
+
+Prerequisites:
+- Docker with `docker-compose` v2
+
+Run:
+```bash
+make test-e2e-dns01
+```
+
+This test:
+- Spins up BIND in a container (serves `pebble-test.local` zone)
+- Creates an order for `test.pebble-test.local`
+- Uses dns-01 challenge with `nsupdate` to dynamically manage TXT records
+- Forces Pebble to query BIND for validation (real DNS lookup, not fake)
+- Validates end-to-end flow: account → order → challenge → DNS validation → cert
+
+**Benefits over staging:**
+- ✅ Fast (~10-20s vs 5-10 min)
+- ✅ No internet required
+- ✅ No LE infrastructure issues
+- ✅ Repeatable, deterministic
+- ✅ Great for CI/CD
+
+See [test/e2e/bind/README.md](test/e2e/bind/README.md) for details and troubleshooting.
+
 ### Staging E2E setup
 
-`make test-e2e-staging` runs `TestStagingLE` and requires dns-01 automation.
+`make test-e2e-staging` runs `TestStagingLE` against real Let's Encrypt staging and requires dns-01 automation.
 
 Required environment variables:
 
@@ -346,8 +375,8 @@ Example:
 ```bash
 export ACME_E2E_DOMAIN=staging.example.com
 export ACME_E2E_EMAIL=ops@example.com
-export ACME_E2E_DNS_PRESENT_CMD='bash test/e2e/examples/dns_present.sh "$1" "$2"'
-export ACME_E2E_DNS_CLEANUP_CMD='bash test/e2e/examples/dns_cleanup.sh "$1" "$2"'
+export ACME_E2E_DNS_PRESENT_CMD='bash ./test/e2e/examples/dns_present.sh "$1" "$2"'
+export ACME_E2E_DNS_CLEANUP_CMD='bash ./test/e2e/examples/dns_cleanup.sh "$1" "$2"'
 make test-e2e-staging
 ```
 

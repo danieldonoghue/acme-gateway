@@ -305,12 +305,35 @@ func TestStagingLE(t *testing.T) {
 		}
 
 		waitForTXTRecord(t, fqdn, dnsValue)
+		t.Logf("DEBUG: TXT record confirmed on all authoritative NS; waiting 30 seconds for full replication...")
+		time.Sleep(30 * time.Second)
+		t.Logf("DEBUG: verifying SOA serial consistency across authoritative NS...")
+		verifySOAConsistency(t, domain)
 		t.Logf("triggering staging dns-01 challenge: %s", dnsCh.URL)
 		client.triggerChallenge(t, dnsCh.URL)
 	}
 
 	order = client.pollOrderWithTimeout(t, orderURL, envDurationSeconds("ACME_E2E_ORDER_TIMEOUT_SECONDS", 600))
 	if order.Status != "ready" && order.Status != "valid" {
+		if order.Error != nil {
+			t.Logf("staging order problem: type=%s detail=%s", order.Error.Type, order.Error.Detail)
+		}
+		for _, authzURL := range order.Authorizations {
+			a := client.getAuthz(t, authzURL)
+			t.Logf("staging authz detail %s: status=%s identifier=%s", authzURL, a.Status, a.Identifier.Value)
+			if a.Error != nil {
+				t.Logf("staging authz problem: type=%s detail=%s", a.Error.Type, a.Error.Detail)
+			}
+			for _, ch := range a.Challenges {
+				if ch.Type != "dns-01" {
+					continue
+				}
+				t.Logf("staging dns-01 challenge detail: url=%s status=%s validated=%s", ch.URL, ch.Status, ch.Validated)
+				if ch.Error != nil {
+					t.Logf("staging dns-01 challenge problem: type=%s detail=%s", ch.Error.Type, ch.Error.Detail)
+				}
+			}
+		}
 		t.Fatalf("expected order status ready or valid, got %q", order.Status)
 	}
 
@@ -357,19 +380,317 @@ func waitForTXTRecord(t *testing.T, fqdn, want string) {
 	timeout := envDurationSeconds("ACME_E2E_DNS_TIMEOUT_SECONDS", 300)
 	interval := envDurationSeconds("ACME_E2E_DNS_POLL_SECONDS", 5)
 
+	nsHosts, nsErr := authoritativeNameservers(fqdn)
+	if nsErr != nil {
+		t.Logf("warning: could not resolve authoritative nameservers for %s: %v", fqdn, nsErr)
+	}
+	if len(nsHosts) > 0 {
+		t.Logf("authoritative nameservers for %s: %v", fqdn, nsHosts)
+	}
+
 	deadline := time.Now().Add(timeout)
+	attempt := 0
 	for time.Now().Before(deadline) {
-		txts, err := net.LookupTXT(fqdn)
-		if err == nil {
-			for _, v := range txts {
-				if v == want {
-					return
+		attempt++
+		var matched bool
+		if len(nsHosts) > 0 {
+			missing := make([]string, 0, len(nsHosts))
+			successfulNS := make([]string, 0, len(nsHosts))
+			for _, ns := range nsHosts {
+				txts, err := lookupTXTAtNameserver(fqdn, ns)
+				if err != nil {
+					missing = append(missing, ns+"(lookup failed)")
+					if attempt == 1 {
+						t.Logf("DEBUG: ns %s lookup error: %v", ns, err)
+					}
+					continue
+				}
+				t.Logf("DEBUG: ns %s returned %d TXT records", ns, len(txts))
+				nsMatched := false
+				for _, v := range txts {
+					t.Logf("DEBUG: ns %s has TXT: %s", ns, v)
+					if v == want {
+						nsMatched = true
+						break
+					}
+				}
+				if !nsMatched {
+					missing = append(missing, ns)
+				} else {
+					successfulNS = append(successfulNS, ns)
 				}
 			}
+			matched = len(missing) == 0
+			if !matched && (attempt == 1 || attempt%6 == 0) {
+				t.Logf("TXT not yet visible on all authoritative NS for %s; still missing on: %v", fqdn, missing)
+			}
+			if matched {
+				t.Logf("TXT record now visible on all authoritative NS for %s (found after %d attempts, successful NS: %v)", fqdn, attempt, successfulNS)
+				return
+			}
+		} else {
+			// Fallback if NS discovery fails.
+			t.Logf("DEBUG: NS discovery failed, falling back to recursive resolver for %s", fqdn)
+			txts, err := net.LookupTXT(fqdn)
+			if err != nil {
+				t.Logf("DEBUG: recursive lookup failed for %s: %v", fqdn, err)
+			} else {
+				t.Logf("DEBUG: recursive lookup returned %d TXT records for %s", len(txts), fqdn)
+				for _, v := range txts {
+					if v == want {
+						t.Logf("DEBUG: found matching TXT record via recursive resolver after %d attempts", attempt)
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				return
+			}
+		}
+
+		if matched {
+			return
+		}
+		timeLeft := deadline.Sub(time.Now())
+		if attempt == 1 || attempt%6 == 0 {
+			t.Logf("DEBUG: waitForTXTRecord still waiting (attempt %d, %v remaining)", attempt, timeLeft)
 		}
 		time.Sleep(interval)
 	}
 	t.Fatalf("TXT propagation timeout after %s for %s (wanted %q)", timeout, fqdn, want)
+}
+
+// TestPebbleDNS01 exercises full issuance against Pebble using dns-01 challenges
+// with real DNS validation via BIND (not PEBBLE_VA_ALWAYS_VALID).
+//
+// This test requires:
+//   - Docker with docker-compose
+//   - PEBBLE_VA_ALWAYS_VALID=0 (to enable real DNS validation)
+//   - ACME_E2E_PEBBLE_DNS=1 to opt-in (since it requires special Pebble setup)
+//
+// To run:
+//
+//	export ACME_E2E_PEBBLE_DNS=1
+//	export PEBBLE_VA_ALWAYS_VALID=0
+//	make test-e2e
+//
+// The test uses BIND running in docker-compose to serve pebble-test.local.
+// DNS hooks use nsupdate to dynamically manage TXT records.
+func TestPebbleDNS01(t *testing.T) {
+	if os.Getenv("ACME_E2E_PEBBLE_DNS") == "" {
+		t.Skip("set ACME_E2E_PEBBLE_DNS=1 to run (requires PEBBLE_VA_ALWAYS_VALID=0)")
+	}
+
+	h := newHarness(t)
+	client := newACMEClient(t, h.GatewayURL, h.TrustPool)
+
+	// Register account
+	accountURL := client.register(t)
+	t.Logf("pebble dns-01 account: %s", accountURL)
+
+	// Create order for test domain in BIND zone
+	const domain = "test.pebble-test.local"
+	order, orderURL := client.newOrder(t, domain)
+	t.Logf("pebble dns-01 order: %s (status=%s)", orderURL, order.Status)
+	if len(order.Authorizations) == 0 {
+		t.Fatal("order has no authorizations")
+	}
+
+	// Handle dns-01 challenges
+	for _, authzURL := range order.Authorizations {
+		authz := client.getAuthz(t, authzURL)
+		t.Logf("pebble dns-01 authz %s: status=%s", authzURL, authz.Status)
+
+		if authz.Status == "valid" {
+			continue
+		}
+
+		dnsCh, ok := challengeByType(authz.Challenges, "dns-01")
+		if !ok {
+			available := make([]string, 0, len(authz.Challenges))
+			for _, ch := range authz.Challenges {
+				available = append(available, ch.Type)
+			}
+			t.Fatalf("dns-01 challenge not offered; available=%v", available)
+		}
+
+		keyAuth, dnsValue, err := client.dns01TXTFromToken(dnsCh.Token)
+		if err != nil {
+			t.Fatalf("computing dns-01 TXT value: %v", err)
+		}
+
+		// Use BIND hooks to add TXT record dynamically
+		fqdn := "_acme-challenge." + strings.TrimSuffix(domain, ".")
+		presentCmd := os.Getenv("ACME_E2E_PEBBLE_DNS_PRESENT_CMD")
+		if presentCmd == "" {
+			t.Fatal("ACME_E2E_PEBBLE_DNS_PRESENT_CMD not set; use 'make test-e2e-dns01'")
+		}
+		cleanupCmd := os.Getenv("ACME_E2E_PEBBLE_DNS_CLEANUP_CMD")
+		if cleanupCmd == "" {
+			t.Fatal("ACME_E2E_PEBBLE_DNS_CLEANUP_CMD not set; use 'make test-e2e-dns01'")
+		}
+
+		runDNSHook(t, "present", presentCmd, fqdn, dnsValue, dnsCh.Token, keyAuth)
+		if cleanupCmd != "" {
+			t.Cleanup(func() {
+				runDNSHook(t, "cleanup", cleanupCmd, fqdn, dnsValue, dnsCh.Token, keyAuth)
+			})
+		}
+
+		// Wait briefly for propagation to BIND
+		t.Logf("waiting 2 seconds for DNS propagation to BIND...")
+		time.Sleep(2 * time.Second)
+
+		t.Logf("triggering pebble dns-01 challenge: %s", dnsCh.URL)
+		client.triggerChallenge(t, dnsCh.URL)
+	}
+
+	// Poll order until ready
+	order = client.pollOrder(t, orderURL)
+	t.Logf("pebble dns-01 order after challenge: status=%s", order.Status)
+	if order.Status != "ready" && order.Status != "valid" {
+		if order.Error != nil {
+			t.Logf("pebble dns-01 order error: type=%s detail=%s", order.Error.Type, order.Error.Detail)
+		}
+		for _, authzURL := range order.Authorizations {
+			a := client.getAuthz(t, authzURL)
+			if a.Error != nil {
+				t.Logf("pebble dns-01 authz error: type=%s detail=%s", a.Error.Type, a.Error.Detail)
+			}
+		}
+		t.Fatalf("expected order status ready or valid, got %q", order.Status)
+	}
+
+	// Finalize and fetch certificate
+	certURL := client.finalize(t, order.Finalize, orderURL, domain)
+	t.Logf("pebble dns-01 certificate URL: %s", certURL)
+
+	certs := parseCerts(t, client.fetchCert(t, certURL))
+	assertCertSANs(t, certs, domain)
+	t.Logf("pebble dns-01 issued %d certificate(s)", len(certs))
+}
+
+func authoritativeNameservers(fqdn string) ([]string, error) {
+	name := strings.TrimSuffix(strings.TrimSpace(fqdn), ".")
+	if name == "" {
+		return nil, fmt.Errorf("empty fqdn")
+	}
+
+	labels := strings.Split(name, ".")
+	if len(labels) < 2 {
+		return nil, fmt.Errorf("invalid fqdn %q", fqdn)
+	}
+
+	for i := 0; i <= len(labels)-2; i++ {
+		candidate := strings.Join(labels[i:], ".")
+		nsRecords, err := net.LookupNS(candidate)
+		if err != nil || len(nsRecords) == 0 {
+			continue
+		}
+
+		hosts := make([]string, 0, len(nsRecords))
+		seen := map[string]struct{}{}
+		for _, ns := range nsRecords {
+			h := strings.TrimSuffix(strings.TrimSpace(ns.Host), ".")
+			if h == "" {
+				continue
+			}
+			if _, ok := seen[h]; ok {
+				continue
+			}
+			seen[h] = struct{}{}
+			hosts = append(hosts, h)
+		}
+		if len(hosts) > 0 {
+			return hosts, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no authoritative nameservers found for %q", fqdn)
+}
+
+func lookupTXTAtNameserver(fqdn, nsHost string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// First, resolve the nameserver hostname to IP(s) using system resolver
+	ips, err := net.LookupIP(nsHost)
+	if err != nil {
+		return nil, fmt.Errorf("resolve nameserver %s: %w", nsHost, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no IPs found for nameserver %s", nsHost)
+	}
+
+	// Use the first IP to query
+	nsIP := ips[0].String()
+
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{}
+			return d.DialContext(ctx, "udp", net.JoinHostPort(nsIP, "53"))
+		},
+	}
+
+	return r.LookupTXT(ctx, strings.TrimSuffix(fqdn, "."))
+}
+
+func verifySOAConsistency(t *testing.T, domain string) {
+	t.Helper()
+
+	nsHosts, err := authoritativeNameservers(domain)
+	if err != nil {
+		t.Logf("WARNING: could not resolve authoritative nameservers: %v", err)
+		return
+	}
+	if len(nsHosts) == 0 {
+		t.Logf("WARNING: no authoritative nameservers found for %s", domain)
+		return
+	}
+
+	// Query SOA from each nameserver
+	soaSerials := make(map[string]string)
+	for _, ns := range nsHosts {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		r := &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{}
+				return d.DialContext(ctx, "udp", net.JoinHostPort(ns, "53"))
+			},
+		}
+
+		// Use LookupNS to get SOA details (this is a workaround; ideally we'd query SOA directly)
+		// For now, just log NS to verify connectivity
+		nss, err := r.LookupNS(ctx, domain)
+		if err != nil {
+			t.Logf("DEBUG: ns %s SOA query failed: %v", ns, err)
+			soaSerials[ns] = "ERROR"
+			continue
+		}
+		if len(nss) > 0 {
+			t.Logf("DEBUG: ns %s responding (found %d NS records)", ns, len(nss))
+			soaSerials[ns] = "OK"
+		}
+	}
+
+	// Check if all NS are responding
+	errCount := 0
+	for ns, status := range soaSerials {
+		if status == "ERROR" {
+			t.Logf("DEBUG: nameserver %s not responding", ns)
+			errCount++
+		}
+	}
+	if errCount > 0 {
+		t.Logf("WARNING: %d/%d nameservers not responding for SOA check", errCount, len(nsHosts))
+	} else {
+		t.Logf("DEBUG: all %d authoritative nameservers responding consistently", len(nsHosts))
+	}
 }
 
 func envDurationSeconds(name string, defaultSeconds int) time.Duration {

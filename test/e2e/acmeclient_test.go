@@ -47,16 +47,20 @@ type acmeOrder struct {
 
 // acmeAuthz mirrors the RFC 8555 authorization object.
 type acmeAuthz struct {
-	Status     string      `json:"status"`
-	Identifier acmeID      `json:"identifier"`
-	Challenges []acmeChall `json:"challenges"`
+	Status     string       `json:"status"`
+	Identifier acmeID       `json:"identifier"`
+	Challenges []acmeChall  `json:"challenges"`
+	Error      *acmeProblem `json:"error,omitempty"`
 }
 
 // acmeChall mirrors a single challenge in an authorization.
 type acmeChall struct {
-	Type  string `json:"type"`
-	URL   string `json:"url"`
-	Token string `json:"token"`
+	Type      string       `json:"type"`
+	URL       string       `json:"url"`
+	Token     string       `json:"token"`
+	Status    string       `json:"status,omitempty"`
+	Validated string       `json:"validated,omitempty"`
+	Error     *acmeProblem `json:"error,omitempty"`
 }
 
 // acmeID is an ACME identifier (type + value).

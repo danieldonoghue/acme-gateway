@@ -4,6 +4,15 @@
 # can exercise the full ACME protocol flow without a real public endpoint.
 # Never use this mode against any environment other than local testing.
 services:
+  # BIND DNS server for dns-01 validation testing (TestPebbleDNS01).
+  # Set PEBBLE_VA_ALWAYS_VALID=0 to enable real DNS validation.
+  bind:
+    build:
+      context: ./bind
+      dockerfile: Dockerfile
+    environment:
+      TZ: UTC
+
   pebble:
     image: ghcr.io/letsencrypt/pebble:latest
     ports:
@@ -12,3 +21,7 @@ services:
     environment:
       PEBBLE_VA_NOSLEEP: "1"
       PEBBLE_VA_ALWAYS_VALID: "1"
+    # For dns-01 tests (TestPebbleDNS01), set PEBBLE_VA_ALWAYS_VALID=0
+    # and Pebble will query bind:53 for DNS validation
+    depends_on:
+      - bind

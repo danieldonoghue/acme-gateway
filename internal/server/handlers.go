@@ -399,6 +399,7 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, errServerInternal("upstream account unavailable"))
 		return
 	}
+	h.log.Info("order using upstream account", "gateway_account_id", acct.ID, "upstream_id", decision.UpstreamID, "upstream_account_url", client.AccountURL())
 
 	// Convert identifiers for the upstream client.
 	upstreamIDs := make([]upstream.Identifier, len(req.Identifiers))
@@ -617,12 +618,16 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 			}
 			gatewayID = persisted.GatewayID
 		}
-		rewrittenChallenges[i] = map[string]interface{}{
+		chalResp := map[string]interface{}{
 			"type":   chal.Type,
 			"url":    h.cfg.Server.BaseURL + "/challenge/" + gatewayID,
 			"token":  chal.Token,
 			"status": chal.Status,
 		}
+		if chal.Error != nil {
+			chalResp["error"] = chal.Error
+		}
+		rewrittenChallenges[i] = chalResp
 	}
 
 	resp := map[string]interface{}{
@@ -698,6 +703,9 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		"url":    h.cfg.Server.BaseURL + "/challenge/" + chalID,
 		"token":  chal.Token,
 		"status": chal.Status,
+	}
+	if chal.Error != nil {
+		resp["error"] = chal.Error
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1027,9 +1035,15 @@ func (h *Handler) mustParsePublicKey(jwkJSON string) interface{} {
 // compatibility for legacy slot-routed orders.
 func (h *Handler) orderClient(ctx context.Context, order *model.Order) (*upstream.Client, error) {
 	if order.UpstreamSlot >= 0 {
+		h.log.Debug("order using slot-based client", "order_id", order.ID, "slot", order.UpstreamSlot)
 		return h.pool.GetSlot(ctx, order.UpstreamID, order.UpstreamSlot)
 	}
-	return h.pool.GetClientForAccount(ctx, order.UpstreamID, order.AccountID)
+	h.log.Debug("order using account-bound client", "order_id", order.ID, "gateway_account_id", order.AccountID, "upstream_id", order.UpstreamID)
+	client, err := h.pool.GetClientForAccount(ctx, order.UpstreamID, order.AccountID)
+	if err == nil {
+		h.log.Debug("resolved account-bound upstream account", "order_id", order.ID, "upstream_account_url", client.AccountURL())
+	}
+	return client, err
 }
 
 // buildOrderResponse constructs a gateway-local order response from an upstream order.

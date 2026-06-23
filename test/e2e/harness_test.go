@@ -231,7 +231,7 @@ func newHarnessWithConfig(t *testing.T, mutate func(*config.Config)) *harness {
 		t.Fatalf("store.New: %v", err)
 	}
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r := router.New(&cfg.Routing)
 	pool := upstream.NewPool(cfg, st)
 	h := server.NewHandler(cfg, st, r, pool, log)
@@ -276,11 +276,16 @@ func newHarnessWithConfig(t *testing.T, mutate func(*config.Config)) *harness {
 func newStagingHarness(t *testing.T) *harness {
 	t.Helper()
 
+	email := os.Getenv("ACME_E2E_EMAIL")
+	if email == "" {
+		email = "test@example.com" // fallback for tests that don't set it
+	}
+
 	return newHarnessWithConfig(t, func(cfg *config.Config) {
 		cfg.Upstreams = map[string]config.UpstreamConfig{
 			"le-staging": {
 				DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
-				ContactEmail: "test@example.invalid",
+				ContactEmail: email,
 			},
 		}
 		cfg.Routing = config.RoutingConfig{DefaultUpstream: "le-staging"}

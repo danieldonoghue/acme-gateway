@@ -47,6 +47,15 @@ upstreams:
     # For a fleet of 50 servers all renewing at the same time, 2 accounts
     # provides comfortable headroom. Not compatible with EAB upstreams.
     account_count: 3
+    # REQUIRED for dns-01 challenges: The gateway's upstream account key differs
+    # from the client's gateway account key. Clients compute dns-01 TXT using their
+    # gateway key, but the upstream CA validates using the gateway's upstream key.
+    # The dns_hook lets the gateway publish the correct upstream-derived TXT so that
+    # the upstream CA can validate it. Without this, dns-01 fails with "Correct value
+    # not found" even if a TXT record exists (it's just the wrong one).
+    dns_hook:
+      deploy_script:  "/etc/acme-gateway/hooks/deploy-dns.sh"
+      cleanup_script: "/etc/acme-gateway/hooks/cleanup-dns.sh"
     # No EAB required for Let's Encrypt.
     # ca_cert_path is not needed for public CAs with well-known roots.
 

@@ -10,10 +10,11 @@
 #   debian-major-version "12" or "13"
 #
 # Inputs:
-#   dist/acme-gateway_linux_<arch>   pre-compiled binary (CGO_ENABLED=0)
-#   acme-gateway.service             systemd unit file
-#   config.yaml.example              example configuration
-#   packaging/scripts/               maintainer scripts
+#   dist/acme-gateway_linux_<arch>      pre-compiled binary (CGO_ENABLED=0)
+#   acme-gateway.service                systemd unit file
+#   config.yaml.example                 example configuration
+#   packaging/hooks.d/examples/*.sh      example DNS hook scripts
+#   packaging/scripts/                   maintainer scripts
 #
 # Output:
 #   dist/acme-gateway_<version>_debian<ver>_<arch>.deb
@@ -49,12 +50,20 @@ mkdir -p \
     "${BUILD_DIR}/usr/local/bin" \
     "${BUILD_DIR}/lib/systemd/system" \
     "${BUILD_DIR}/etc/acme-gateway" \
+    "${BUILD_DIR}/etc/acme-gateway/hooks.d/examples" \
     "${BUILD_DIR}/var/lib/acme-gateway"
 
 # ── Install files ─────────────────────────────────────────────────────────────
 install -m 0755 "${BINARY}"            "${BUILD_DIR}/usr/local/bin/acme-gateway"
 install -m 0644 acme-gateway.service   "${BUILD_DIR}/lib/systemd/system/acme-gateway.service"
 install -m 0644 config.yaml.example    "${BUILD_DIR}/etc/acme-gateway/config.yaml.example"
+
+# Install example DNS hook scripts
+for hook_script in packaging/hooks.d/examples/*.sh; do
+    if [[ -f "${hook_script}" ]]; then
+        install -m 0755 "${hook_script}" "${BUILD_DIR}/etc/acme-gateway/hooks.d/examples/"
+    fi
+done
 
 # ── DEBIAN/conffiles ─────────────────────────────────────────────────────────
 echo "/etc/acme-gateway/config.yaml.example" > "${BUILD_DIR}/DEBIAN/conffiles"

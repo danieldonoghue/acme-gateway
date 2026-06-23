@@ -15,6 +15,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -690,12 +693,29 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, errServerInternal("resolving challenge authorization: "+err.Error()))
 		return
 	}
+	if err := h.prepareDNS01Challenge(r.Context(), order, client, rm.UpstreamURL); err != nil {
+		h.writeError(w, errServerInternal("preparing dns-01 challenge: "+err.Error()))
+		return
+	}
+	h.log.Info("triggering upstream challenge",
+		"challenge_id", chalID,
+		"order_id", order.ID,
+		"upstream_id", order.UpstreamID,
+		"upstream_challenge_url", rm.UpstreamURL,
+	)
 
 	chal, err := client.TriggerChallenge(r.Context(), rm.UpstreamURL)
 	if err != nil {
 		h.writeError(w, errServerInternal("triggering challenge: "+err.Error()))
 		return
 	}
+	h.log.Info("upstream challenge triggered",
+		"challenge_id", chalID,
+		"order_id", order.ID,
+		"upstream_id", order.UpstreamID,
+		"challenge_type", chal.Type,
+		"challenge_status", chal.Status,
+	)
 	w.Header().Add("Link", h.upLinkHeader(authzURL))
 
 	resp := map[string]interface{}{
@@ -1044,6 +1064,190 @@ func (h *Handler) orderClient(ctx context.Context, order *model.Order) (*upstrea
 		h.log.Debug("resolved account-bound upstream account", "order_id", order.ID, "upstream_account_url", client.AccountURL())
 	}
 	return client, err
+}
+
+func (h *Handler) dnsHookForUpstream(upstreamID string) config.DNSHook {
+	if up, ok := h.cfg.Upstreams[upstreamID]; ok {
+		if up.DNSHook.DeployScript != "" {
+			return up.DNSHook
+		}
+	}
+	if h.cfg.Bootstrap.Enabled && h.cfg.Bootstrap.Upstream == upstreamID && strings.EqualFold(h.cfg.Bootstrap.Challenge, "dns-01") {
+		return h.cfg.Bootstrap.DNSHook
+	}
+	return config.DNSHook{}
+}
+
+func (h *Handler) runDNSHookScript(ctx context.Context, script, domain, fqdn, dnsValue, token string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	script = strings.TrimSpace(script)
+	if err := validateDNSHookScriptPath(script); err != nil {
+		return err
+	}
+
+	h.log.Info("dns hook starting", "script", script, "fqdn", fqdn, "domain", domain)
+	started := time.Now()
+
+	// Execute the configured hook script directly (no shell), passing the
+	// same positional args expected by Certbot-style DNS hooks.
+	cmd := exec.CommandContext(ctx, script, "--", fqdn, dnsValue, token) // #nosec G204,G702 -- operator-configured absolute executable path is validated above.
+	cmd.Env = append(os.Environ(),
+		"CERTBOT_DOMAIN="+domain,
+		"CERTBOT_VALIDATION="+dnsValue,
+		"CERTBOT_TOKEN="+token,
+		"ACME_GATEWAY_DOMAIN="+domain,
+		"ACME_GATEWAY_FQDN="+fqdn,
+		"ACME_GATEWAY_DNS_VALUE="+dnsValue,
+		"ACME_GATEWAY_TOKEN="+token,
+	)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		h.log.Warn("dns hook failed",
+			"script", script,
+			"fqdn", fqdn,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
+		return fmt.Errorf("dns hook %q failed: %w; output: %s", script, err, strings.TrimSpace(string(out)))
+	}
+	if len(out) > 0 {
+		h.log.Debug("dns hook output", "script", script, "output", strings.TrimSpace(string(out)))
+	}
+	h.log.Info("dns hook completed", "script", script, "fqdn", fqdn, "duration_ms", time.Since(started).Milliseconds())
+	return nil
+}
+
+func validateDNSHookScriptPath(script string) error {
+	if script == "" {
+		return fmt.Errorf("dns hook script is empty")
+	}
+	if !filepath.IsAbs(script) {
+		return fmt.Errorf("dns hook script must be an absolute path: %q", script)
+	}
+	fi, err := os.Stat(script)
+	if err != nil {
+		return fmt.Errorf("dns hook script %q not accessible: %w", script, err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("dns hook script %q is a directory", script)
+	}
+	if fi.Mode()&0o111 == 0 {
+		return fmt.Errorf("dns hook script %q is not executable", script)
+	}
+	return nil
+}
+
+func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order, client *upstream.Client, upstreamChallengeURL string) error {
+	hook := h.dnsHookForUpstream(order.UpstreamID)
+	if hook.DeployScript == "" {
+		h.log.Debug("dns-01 pre-check: no deploy hook configured for upstream",
+			"order_id", order.ID,
+			"upstream_id", order.UpstreamID,
+		)
+		return nil
+	}
+
+	authzRMs, err := h.store.GetAuthzResourcesByOrderID(ctx, order.ID)
+	if err != nil {
+		return fmt.Errorf("listing authorization resources: %w", err)
+	}
+
+	for _, authzRM := range authzRMs {
+		upAuthz, err := client.GetAuthorization(ctx, authzRM.UpstreamURL)
+		if err != nil {
+			h.log.Debug("dns-01 pre-check: failed to fetch upstream authorization",
+				"order_id", order.ID,
+				"upstream_id", order.UpstreamID,
+				"authz_url", authzRM.UpstreamURL,
+				"error", err,
+			)
+			continue
+		}
+		for _, ch := range upAuthz.Challenges {
+			if ch.URL != upstreamChallengeURL {
+				continue
+			}
+			if ch.Type != "dns-01" {
+				h.log.Debug("dns-01 pre-check: challenge is not dns-01, skipping hook deploy",
+					"order_id", order.ID,
+					"upstream_id", order.UpstreamID,
+					"challenge_type", ch.Type,
+				)
+				return nil
+			}
+
+			domain := strings.TrimSuffix(strings.TrimSpace(upAuthz.Identifier.Value), ".")
+			if domain == "" {
+				return fmt.Errorf("empty authorization identifier for dns-01 challenge")
+			}
+			_, dnsValue, err := client.DNS01TXTFromToken(ch.Token)
+			if err != nil {
+				return fmt.Errorf("computing dns-01 TXT value: %w", err)
+			}
+			fqdn := "_acme-challenge." + domain
+
+			h.log.Info("deploying dns-01 TXT via hook",
+				"order_id", order.ID,
+				"upstream_id", order.UpstreamID,
+				"fqdn", fqdn,
+				"authz_url", authzRM.UpstreamURL,
+				"challenge_url", ch.URL,
+			)
+			if err := h.runDNSHookScript(ctx, hook.DeployScript, domain, fqdn, dnsValue, ch.Token); err != nil {
+				return err
+			}
+
+			if hook.CleanupScript != "" {
+				cleanupBaseCtx := context.WithoutCancel(ctx)
+				h.log.Debug("dns-01 cleanup watcher started",
+					"order_id", order.ID,
+					"upstream_id", order.UpstreamID,
+					"authz_url", authzRM.UpstreamURL,
+					"fqdn", fqdn,
+				)
+				go func(cleanupBaseCtx context.Context, orderID, upstreamID, authzURL, domain, fqdn, dnsValue, token, cleanupScript string) {
+					cleanupCtx, cancel := context.WithTimeout(cleanupBaseCtx, 2*time.Minute)
+					defer cancel()
+					ticker := time.NewTicker(time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-cleanupCtx.Done():
+							h.log.Warn("dns-01 cleanup timed out waiting for authorization completion", "order_id", orderID, "upstream_id", upstreamID, "fqdn", fqdn)
+							return
+						case <-ticker.C:
+							upAuthz, err := client.GetAuthorization(cleanupCtx, authzURL)
+							if err != nil {
+								continue
+							}
+							if upAuthz.Status == "pending" {
+								continue
+							}
+							h.log.Info("dns-01 cleanup watcher detected authorization completion",
+								"order_id", orderID,
+								"upstream_id", upstreamID,
+								"authz_url", authzURL,
+								"authz_status", upAuthz.Status,
+								"fqdn", fqdn,
+							)
+							if err := h.runDNSHookScript(cleanupCtx, cleanupScript, domain, fqdn, dnsValue, token); err != nil {
+								h.log.Warn("dns-01 cleanup hook failed", "order_id", orderID, "upstream_id", upstreamID, "fqdn", fqdn, "error", err)
+								return
+							}
+							h.log.Info("dns-01 cleanup hook completed", "order_id", orderID, "upstream_id", upstreamID, "fqdn", fqdn)
+							return
+						}
+					}
+				}(cleanupBaseCtx, order.ID, order.UpstreamID, authzRM.UpstreamURL, domain, fqdn, dnsValue, ch.Token, hook.CleanupScript)
+			}
+
+			return nil
+		}
+	}
+
+	return nil
 }
 
 // buildOrderResponse constructs a gateway-local order response from an upstream order.

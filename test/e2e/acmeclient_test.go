@@ -137,7 +137,7 @@ func newACMEClientWithAccountKey(t *testing.T, baseURL string, trustPool *x509.C
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{RootCAs: trustPool},
 		},
-		Timeout: 30 * time.Second,
+		Timeout: envDurationSeconds("ACME_E2E_HTTP_TIMEOUT_SECONDS", 120),
 	}
 
 	c := &acmeClient{key: key, alg: alg, jwkAlg: jwk, hc: hc}

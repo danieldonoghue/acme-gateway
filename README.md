@@ -64,14 +64,26 @@ go build -o acme-gateway ./cmd/acme-gateway
 ./acme-gateway -config config.yaml
 ```
 
+## DNS Hooks
+
+DNS hooks are operator-provided scripts used for dns-01 TXT publication.
+
+- Configure `upstreams.<name>.dns_hook` for client orders routed to dns-01 upstreams.
+- Configure `bootstrap.dns_hook` only when `bootstrap.enabled: true`.
+- Hook scripts receive `CERTBOT_DOMAIN`, `CERTBOT_VALIDATION`, and `CERTBOT_TOKEN` (plus `ACME_GATEWAY_*` aliases).
+
+Why this exists: with account-bound upstream routing, upstream CAs validate TXT values derived from the gateway's upstream account key, not the client's key. The gateway must publish the upstream-derived TXT value.
+
+Details:
+- Architecture and decision rationale: [docs/decisions/0005-gateway-managed-dns01-hooks.md](docs/decisions/0005-gateway-managed-dns01-hooks.md)
+- Example hook scripts: [packaging/hooks.d/examples](packaging/hooks.d/examples)
+- Hook customization guide: [test/e2e/examples/README.md](test/e2e/examples/README.md)
+
 ## Configuration
 
-See [config.yaml.example](config.yaml.example) for a fully annotated configuration file.
+See [config.yaml.example](config.yaml.example) for the full annotated configuration.
 
 ### Key concepts
-
-**Profile namespace** — Profile names (`tlsserver`, `tlsclient`, etc.) are defined entirely by the operator in the `profiles` block. They are advertised in the gateway's `/directory` and have no required relationship to any upstream CA's profile names.
-
 **Upstream profile mapping** — Per routing rule:
 - Omit `upstream_profile` → strip (send no profile field upstream, CA uses its default)
 - `upstream_profile: "name"` → always send this name upstream (override)
@@ -131,15 +143,7 @@ Set `server.tls: false` to disable TLS termination at the gateway entirely. The 
 
 ### DNS hook scripts
 
-Hook scripts are called with the same environment variables as Certbot's manual DNS hooks:
-
-| Variable | Description |
-|---|---|
-| `CERTBOT_DOMAIN` | Domain being validated |
-| `CERTBOT_VALIDATION` | TXT record value to set |
-| `CERTBOT_TOKEN` | Challenge token |
-
-The deploy script must be idempotent. The cleanup script is called after the challenge completes (success or failure).
+Bootstrap uses the same dns-01 hook mechanism documented in [DNS Hooks](README.md#dns-hooks). Configure `bootstrap.dns_hook` when `bootstrap.enabled: true`.
 
 ## Deployment
 
@@ -290,13 +294,15 @@ The workflow will:
 
 | Artifact | Description |
 |---|---|
-| `acme-gateway_vX.Y.Z_linux_amd64.tar.gz` | Binary + systemd unit + config example |
+| `acme-gateway_vX.Y.Z_linux_amd64.tar.gz` | Binary + systemd unit + config example + DNS hook examples |
 | `acme-gateway_vX.Y.Z_linux_arm64.tar.gz` | Same for arm64 |
 | `acme-gateway_X.Y.Z_debian12_amd64.deb` | Debian 12 package |
 | `acme-gateway_X.Y.Z_debian12_arm64.deb` | Debian 12 arm64 package |
 | `acme-gateway_X.Y.Z_debian13_amd64.deb` | Debian 13 package |
 | `acme-gateway_X.Y.Z_debian13_arm64.deb` | Debian 13 arm64 package |
 | `checksums.txt` | SHA-256 checksums for all artifacts |
+
+Tarballs place example hooks under `hooks.d/examples/`; Debian packages install them under `/etc/acme-gateway/hooks.d/examples/`.
 
 Docker images are pushed to `ghcr.io/danieldonoghue/acme-gateway` with tags `vX.Y.Z`, `X.Y`, and `X`.
 

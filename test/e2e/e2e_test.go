@@ -248,7 +248,7 @@ func TestPebbleNewNonce(t *testing.T) {
 }
 
 // TestStagingLE exercises full issuance against Let's Encrypt staging via
-// dns-01 using external hook commands for DNS updates.
+// dns-01 with gateway-managed upstream DNS hooks.
 func TestStagingLE(t *testing.T) {
 	if os.Getenv("ACME_E2E_STAGING") == "" {
 		t.Skip("set ACME_E2E_STAGING=1 to run (requires internet access + real DNS)")
@@ -262,20 +262,22 @@ func TestStagingLE(t *testing.T) {
 	if email == "" {
 		t.Fatal("ACME_E2E_EMAIL must be set when running staging tests")
 	}
-	presentCmd := os.Getenv("ACME_E2E_DNS_PRESENT_CMD")
-	if presentCmd == "" {
-		t.Fatal("ACME_E2E_DNS_PRESENT_CMD must be set to publish dns-01 TXT records")
-	}
-	cleanupCmd := os.Getenv("ACME_E2E_DNS_CLEANUP_CMD")
-
 	h := newStagingHarness(t)
 	client := newACMEClient(t, h.GatewayURL, h.TrustPool)
 
 	accountURL := client.registerWithEmail(t, email)
 	t.Logf("staging account: %s", accountURL)
+	accountID := strings.TrimPrefix(accountURL, h.GatewayURL+"/account/")
 
 	order, orderURL := client.newOrder(t, domain)
 	t.Logf("staging order: %s (status=%s)", orderURL, order.Status)
+	ua, err := h.st.GetUpstreamAccountForAccount(context.Background(), "le-staging", accountID)
+	if err != nil {
+		t.Fatalf("loading bound upstream account for %s: %v", accountID, err)
+	}
+	if ua == nil {
+		t.Fatalf("no bound upstream account found for gateway account %s after order creation", accountID)
+	}
 	if len(order.Authorizations) == 0 {
 		t.Fatal("order has no authorizations")
 	}
@@ -297,26 +299,24 @@ func TestStagingLE(t *testing.T) {
 			t.Fatalf("dns-01 challenge not offered; available=%v", available)
 		}
 
-		keyAuth, dnsValue, err := client.dns01TXTFromToken(dnsCh.Token)
+		keyAuth, dnsValue, err := dns01TXTFromTokenAndPEMKey(dnsCh.Token, []byte(ua.PrivateKey))
 		if err != nil {
-			t.Fatalf("computing dns-01 TXT value: %v", err)
+			t.Fatalf("computing upstream dns-01 TXT value: %v", err)
 		}
 
 		fqdn := "_acme-challenge." + strings.TrimSuffix(domain, ".")
-		runDNSHook(t, "present", presentCmd, fqdn, dnsValue, dnsCh.Token, keyAuth)
-		if cleanupCmd != "" {
-			t.Cleanup(func() {
-				runDNSHook(t, "cleanup", cleanupCmd, fqdn, dnsValue, dnsCh.Token, keyAuth)
-			})
-		}
+		_ = keyAuth // kept for parity with debug workflows where key auth is inspected
 
+		t.Logf("triggering staging dns-01 challenge: %s", dnsCh.URL)
+		client.triggerChallenge(t, dnsCh.URL)
+
+		// Gateway hook deployment is authoritative for staging. Keep the retry
+		// logs to aid DNS propagation debugging using the expected upstream TXT.
 		waitForTXTRecord(t, fqdn, dnsValue)
 		t.Logf("DEBUG: TXT record confirmed on all authoritative NS; waiting 30 seconds for full replication...")
 		time.Sleep(30 * time.Second)
 		t.Logf("DEBUG: verifying SOA serial consistency across authoritative NS...")
 		verifySOAConsistency(t, domain)
-		t.Logf("triggering staging dns-01 challenge: %s", dnsCh.URL)
-		client.triggerChallenge(t, dnsCh.URL)
 	}
 
 	order = client.pollOrderWithTimeout(t, orderURL, envDurationSeconds("ACME_E2E_ORDER_TIMEOUT_SECONDS", 600))

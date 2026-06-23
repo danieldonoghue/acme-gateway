@@ -41,6 +41,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -301,16 +302,74 @@ func newStagingHarness(t *testing.T) *harness {
 	if email == "" {
 		email = "test@example.com" // fallback for tests that don't set it
 	}
+	presentCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_PRESENT_CMD"))
+	if presentCmd == "" {
+		t.Fatal("ACME_E2E_DNS_PRESENT_CMD must be set when running staging tests")
+	}
+	cleanupCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_CLEANUP_CMD"))
+
+	presentWrapper := writeDNSHookWrapper(t, presentCmd, "present")
+	cleanupWrapper := ""
+	if cleanupCmd != "" {
+		cleanupWrapper = writeDNSHookWrapper(t, cleanupCmd, "cleanup")
+	}
 
 	return newHarnessWithConfig(t, func(cfg *config.Config) {
 		cfg.Upstreams = map[string]config.UpstreamConfig{
 			"le-staging": {
 				DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
 				ContactEmail: email,
+				DNSHook: config.DNSHook{
+					DeployScript:  presentWrapper,
+					CleanupScript: cleanupWrapper,
+				},
 			},
 		}
 		cfg.Routing = config.RoutingConfig{DefaultUpstream: "le-staging"}
 	})
+}
+
+func writeDNSHookWrapper(t *testing.T, command, phase string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dns-hook-wrapper-"+phase+".sh")
+	content := strings.Join([]string{
+		"#!/bin/sh",
+		"set -e",
+		"",
+		"# Bridge gateway hook env vars to legacy ACME_E2E_* script inputs.",
+		"export ACME_E2E_PHASE=\"" + phase + "\"",
+		"export ACME_E2E_FQDN=\"${ACME_GATEWAY_FQDN:-${CERTBOT_DOMAIN:-}}\"",
+		"export ACME_E2E_DNS_VALUE=\"${ACME_GATEWAY_DNS_VALUE:-${CERTBOT_VALIDATION:-}}\"",
+		"export ACME_E2E_TOKEN=\"${ACME_GATEWAY_TOKEN:-${CERTBOT_TOKEN:-}}\"",
+		"",
+		"# Forward positional args from gateway. Drop the optional leading \"--\"",
+		"# sentinel so legacy scripts still receive fqdn as $1 and value as $2.",
+		"if [ \"${1:-}\" = \"--\" ]; then",
+		"  shift",
+		"fi",
+		command + " \"$@\"",
+		"",
+		"# Give authoritative DNS time to converge before upstream challenge trigger.",
+		"if [ \"$ACME_E2E_PHASE\" = \"present\" ]; then",
+		"  delay=\"${ACME_E2E_DNS_PROPAGATION_SECONDS:-30}\"",
+		"  case \"$delay\" in",
+		"    ''|*[!0-9]*) delay=30 ;;",
+		"  esac",
+		"  if [ \"$delay\" -gt 0 ]; then",
+		"    sleep \"$delay\"",
+		"  fi",
+		"fi",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("writing dns hook wrapper: %v", err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod dns hook wrapper: %v", err)
+	}
+	return path
 }
 
 func (h *harness) close() {

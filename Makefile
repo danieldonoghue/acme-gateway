@@ -58,6 +58,10 @@ security: ## Run govulncheck + gosec (requires both in PATH)
 
 deb: build-linux ## Build .deb packages for Debian 12/13 × amd64/arm64 (uses Docker)
 	@chmod +x packaging/build-deb.sh
+	@if [[ ! -d "packaging/hooks.d/examples" ]] || [[ -z "$$(ls -A packaging/hooks.d/examples/*.sh 2>/dev/null)" ]]; then \
+		echo "Error: example DNS hooks not found in packaging/hooks.d/examples/" >&2; \
+		exit 1; \
+	fi
 	@DEB_VERSION="$(subst v,,$(VERSION))"; \
 	docker run --rm \
 		-v "$(PWD):/workspace" \

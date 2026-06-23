@@ -11,6 +11,10 @@ docker pull ghcr.io/danieldonoghue/acme-gateway:%%VERSION%%
 ```bash
 tar -xzf acme-gateway_%%VERSION%%_linux_amd64.tar.gz
 sudo install -m 0755 acme-gateway_%%VERSION%%_linux_amd64/acme-gateway /usr/local/bin/acme-gateway
+
+# Optional: install example DNS hooks for dns-01 upstreams
+sudo install -d /etc/acme-gateway/hooks.d/examples
+sudo cp acme-gateway_%%VERSION%%_linux_amd64/hooks.d/examples/*.sh /etc/acme-gateway/hooks.d/examples/
 ```
 
 ### Debian package (Debian 12/13, amd64/arm64)
@@ -19,7 +23,7 @@ sudo install -m 0755 acme-gateway_%%VERSION%%_linux_amd64/acme-gateway /usr/loca
 sudo dpkg -i acme-gateway_%%DEB_VERSION%%_debian12_amd64.deb
 ```
 
-The package installs the binary to `/usr/local/bin/acme-gateway`, drops a config example at `/etc/acme-gateway/config.yaml.example`, creates the `acme-gateway` system user, and registers a systemd unit.
+The package installs the binary to `/usr/local/bin/acme-gateway`, drops a config example at `/etc/acme-gateway/config.yaml.example`, installs DNS hook examples at `/etc/acme-gateway/hooks.d/examples/`, creates the `acme-gateway` system user, and registers a systemd unit.
 
 ---
 

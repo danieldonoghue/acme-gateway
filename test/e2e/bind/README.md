@@ -101,17 +101,18 @@ EOF
 
 ### `nsupdate` fails: "connection refused"
 - BIND container may not be ready
-- Check `docker ps` to confirm `bind` container is running
+- Check `docker ps` to confirm `e2e-bind-1` container is running
 - Wait a few seconds and retry
+- List containers: `docker compose -f test/e2e/docker-compose.yml ps`
 
 ### Pebble validation fails: "dns-01 query failed"
 - Verify BIND zone file is correct
-- Check TXT record was added: `dig @127.0.0.1 _acme-challenge.test.pebble-test.local TXT`
-- Ensure `PEBBLE_VA_ALWAYS_VALID=0` (not 1)
+- Check TXT record was added: `docker compose -f test/e2e/docker-compose.yml exec bind dig _acme-challenge.test.pebble-test.local TXT`
+- Ensure `PEBBLE_VA_ALWAYS_VALID=0` in environment (not 1)
 
 ### Container DNS resolution issues
-- Restart containers: `docker compose down && docker compose up -d`
-- Verify Pebble can reach BIND: `docker exec acme-gateway-pebble-1 nslookup pebble-test.local bind`
+- Restart containers: `docker compose -f test/e2e/docker-compose.yml down && docker compose -f test/e2e/docker-compose.yml up -d`
+- Verify Pebble can reach BIND: `docker compose -f test/e2e/docker-compose.yml exec pebble nslookup pebble-test.local bind`
 
 ## Future Enhancements
 

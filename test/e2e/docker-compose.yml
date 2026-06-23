@@ -20,7 +20,7 @@ services:
       - "15000:15000"  # Management API – root CA cert available at /roots/0
     environment:
       PEBBLE_VA_NOSLEEP: "1"
-      PEBBLE_VA_ALWAYS_VALID: "1"
+      PEBBLE_VA_ALWAYS_VALID: ${PEBBLE_VA_ALWAYS_VALID:-1}
     # For dns-01 tests (TestPebbleDNS01), set PEBBLE_VA_ALWAYS_VALID=0
     # and Pebble will query bind:53 for DNS validation
     depends_on:

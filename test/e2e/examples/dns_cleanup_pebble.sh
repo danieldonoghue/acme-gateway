@@ -2,7 +2,7 @@
 # DNS cleanup hook for BIND via docker exec
 # Removes a TXT record after dns-01 validation
 #
-# Usage: dns_cleanup.sh <fqdn> <dnsValue>
+# Usage: dns_cleanup_pebble.sh <fqdn> <dnsValue>
 # Environment: ACME_E2E_PHASE, ACME_E2E_FQDN, ACME_E2E_DNS_VALUE
 
 set -e

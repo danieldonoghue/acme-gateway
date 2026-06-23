@@ -2,7 +2,7 @@
 # DNS hook for BIND via docker exec
 # Adds a TXT record for dns-01 validation
 #
-# Usage: dns_present.sh <fqdn> <dnsValue>
+# Usage: dns_present_pebble.sh <fqdn> <dnsValue>
 # Environment: ACME_E2E_PHASE, ACME_E2E_FQDN, ACME_E2E_DNS_VALUE
 
 set -e

@@ -22,8 +22,8 @@ $EDITOR your_dns_present.sh your_dns_cleanup.sh
 ```bash
 export ACME_E2E_DOMAIN=staging.example.com
 export ACME_E2E_EMAIL=ops@example.com
-export ACME_E2E_DNS_PRESENT_CMD='bash test/e2e/examples/your_dns_present.sh'
-export ACME_E2E_DNS_CLEANUP_CMD='bash test/e2e/examples/your_dns_cleanup.sh'
+export ACME_E2E_DNS_PRESENT_CMD='bash test/e2e/examples/your_dns_present.sh $1 $2'
+export ACME_E2E_DNS_CLEANUP_CMD='bash test/e2e/examples/your_dns_cleanup.sh $1 $2'
 make test-e2e-staging
 ```
 
@@ -65,6 +65,7 @@ curl -X POST https://api.cloudflare.com/client/v4/zones/<zone_id>/dns_records \
 ### nsupdate (BIND)
 
 ```bash
+{
 echo "server <dns_server>"
 echo "update add $ACME_E2E_FQDN 60 TXT $ACME_E2E_DNS_VALUE"
 echo "send"

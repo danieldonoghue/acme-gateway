@@ -363,7 +363,8 @@ func runDNSHook(t *testing.T, phase, command, fqdn, dnsValue, token, keyAuthoriz
 		"ACME_E2E_TOKEN="+token,
 		"ACME_E2E_KEY_AUTHORIZATION="+keyAuthorization,
 	)
-	cmd.Args = append(cmd.Args, fqdn, dnsValue)
+	// Pass fqdn and dnsValue as positional args ($1, $2) to hook script
+	cmd.Args = append(cmd.Args, "--", fqdn, dnsValue)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -654,7 +655,6 @@ func verifySOAConsistency(t *testing.T, domain string) {
 	soaSerials := make(map[string]string)
 	for _, ns := range nsHosts {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
 
 		r := &net.Resolver{
 			PreferGo: true,
@@ -670,12 +670,14 @@ func verifySOAConsistency(t *testing.T, domain string) {
 		if err != nil {
 			t.Logf("DEBUG: ns %s SOA query failed: %v", ns, err)
 			soaSerials[ns] = "ERROR"
+			cancel()
 			continue
 		}
 		if len(nss) > 0 {
 			t.Logf("DEBUG: ns %s responding (found %d NS records)", ns, len(nss))
 			soaSerials[ns] = "OK"
 		}
+		cancel()
 	}
 
 	// Check if all NS are responding

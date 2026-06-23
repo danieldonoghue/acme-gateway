@@ -93,8 +93,8 @@ config:
     keyPath: "/etc/acme-gateway/tls/server.key"
     renewBeforeDays: 30
     dnsHook:
-      deployScript: "/etc/acme-gateway/hooks/deploy-dns.sh"
-      cleanupScript: "/etc/acme-gateway/hooks/cleanup-dns.sh"
+      deployScript: "/etc/acme-gateway/hooks.d/deploy-dns.sh"
+      cleanupScript: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
 
   # -- Map of upstream ACME CAs. Keys are upstream IDs referenced in routing rules.
   upstreams:

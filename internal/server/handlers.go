@@ -1090,9 +1090,11 @@ func (h *Handler) runDNSHookScript(ctx context.Context, script, domain, fqdn, dn
 	h.log.Info("dns hook starting", "script", script, "fqdn", fqdn, "domain", domain)
 	started := time.Now()
 
-	// Execute the configured hook script directly (no shell), passing the
-	// same positional args expected by Certbot-style DNS hooks.
-	cmd := exec.CommandContext(ctx, script, "--", fqdn, dnsValue, token) // #nosec G204,G702 -- operator-configured absolute executable path is validated above.
+	// Execute the configured hook script directly (no shell), passing all
+	// required data via environment variables (CERTBOT_* and ACME_GATEWAY_*).
+	// No positional arguments are passed so that scripts can safely use $1/$2
+	// for their own mode dispatch if needed.
+	cmd := exec.CommandContext(ctx, script) // #nosec G204,G702 -- operator-configured absolute executable path is validated above.
 	cmd.Env = append(os.Environ(),
 		"CERTBOT_DOMAIN="+domain,
 		"CERTBOT_VALIDATION="+dnsValue,

@@ -4,9 +4,14 @@ package e2e_test
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danieldonoghue/acme-gateway/internal/config"
 )
@@ -236,20 +241,8 @@ func TestPebbleNewNonce(t *testing.T) {
 	t.Logf("nonce: %s", nonce)
 }
 
-// TestStagingLE exercises the full flow against Let's Encrypt's staging
-// environment. This test is skipped unless ACME_E2E_STAGING=1 is set.
-//
-// Prerequisites:
-//   - A publicly reachable domain controlled by the tester.
-//   - ACME_E2E_DOMAIN: the domain to request a certificate for.
-//   - ACME_E2E_EMAIL:  contact email for the account.
-//   - The gateway host must be reachable from the internet on port 80 for
-//     HTTP-01 validation, OR use DNS-01 via an out-of-band hook (not automated
-//     by this test).
-//
-// This test intentionally does NOT set up HTTP/DNS challenge handlers; it is a
-// skeleton showing how to point the harness at staging. Full staging automation
-// requires additional infrastructure outside the scope of this harness.
+// TestStagingLE exercises full issuance against Let's Encrypt staging via
+// dns-01 using external hook commands for DNS updates.
 func TestStagingLE(t *testing.T) {
 	if os.Getenv("ACME_E2E_STAGING") == "" {
 		t.Skip("set ACME_E2E_STAGING=1 to run (requires internet access + real DNS)")
@@ -259,9 +252,136 @@ func TestStagingLE(t *testing.T) {
 	if domain == "" {
 		t.Fatal("ACME_E2E_DOMAIN must be set when running staging tests")
 	}
+	email := os.Getenv("ACME_E2E_EMAIL")
+	if email == "" {
+		t.Fatal("ACME_E2E_EMAIL must be set when running staging tests")
+	}
+	presentCmd := os.Getenv("ACME_E2E_DNS_PRESENT_CMD")
+	if presentCmd == "" {
+		t.Fatal("ACME_E2E_DNS_PRESENT_CMD must be set to publish dns-01 TXT records")
+	}
+	cleanupCmd := os.Getenv("ACME_E2E_DNS_CLEANUP_CMD")
 
-	t.Logf("staging test targeting domain: %s", domain)
-	t.Skip("staging test skeleton: full HTTP/DNS challenge handling not yet implemented")
+	h := newStagingHarness(t)
+	client := newACMEClient(t, h.GatewayURL, h.TrustPool)
+
+	accountURL := client.registerWithEmail(t, email)
+	t.Logf("staging account: %s", accountURL)
+
+	order, orderURL := client.newOrder(t, domain)
+	t.Logf("staging order: %s (status=%s)", orderURL, order.Status)
+	if len(order.Authorizations) == 0 {
+		t.Fatal("order has no authorizations")
+	}
+
+	for _, authzURL := range order.Authorizations {
+		authz := client.getAuthz(t, authzURL)
+		t.Logf("staging authz %s: status=%s", authzURL, authz.Status)
+
+		if authz.Status == "valid" {
+			continue
+		}
+
+		dnsCh, ok := challengeByType(authz.Challenges, "dns-01")
+		if !ok {
+			available := make([]string, 0, len(authz.Challenges))
+			for _, ch := range authz.Challenges {
+				available = append(available, ch.Type)
+			}
+			t.Fatalf("dns-01 challenge not offered; available=%v", available)
+		}
+
+		keyAuth, dnsValue, err := client.dns01TXTFromToken(dnsCh.Token)
+		if err != nil {
+			t.Fatalf("computing dns-01 TXT value: %v", err)
+		}
+
+		fqdn := "_acme-challenge." + strings.TrimSuffix(domain, ".")
+		runDNSHook(t, "present", presentCmd, fqdn, dnsValue, dnsCh.Token, keyAuth)
+		if cleanupCmd != "" {
+			t.Cleanup(func() {
+				runDNSHook(t, "cleanup", cleanupCmd, fqdn, dnsValue, dnsCh.Token, keyAuth)
+			})
+		}
+
+		waitForTXTRecord(t, fqdn, dnsValue)
+		t.Logf("triggering staging dns-01 challenge: %s", dnsCh.URL)
+		client.triggerChallenge(t, dnsCh.URL)
+	}
+
+	order = client.pollOrderWithTimeout(t, orderURL, envDurationSeconds("ACME_E2E_ORDER_TIMEOUT_SECONDS", 600))
+	if order.Status != "ready" && order.Status != "valid" {
+		t.Fatalf("expected order status ready or valid, got %q", order.Status)
+	}
+
+	certURL := client.finalizeWithCSRKeyAndTimeout(
+		t,
+		order.Finalize,
+		orderURL,
+		domain,
+		csrKeyECDSA,
+		envDurationSeconds("ACME_E2E_FINALIZE_TIMEOUT_SECONDS", 600),
+	)
+	t.Logf("staging certificate URL: %s", certURL)
+
+	certs := parseCerts(t, client.fetchCert(t, certURL))
+	assertCertSANs(t, certs, domain)
+	t.Logf("staging issued %d certificate(s)", len(certs))
+}
+
+func runDNSHook(t *testing.T, phase, command, fqdn, dnsValue, token, keyAuthorization string) {
+	t.Helper()
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Env = append(os.Environ(),
+		"ACME_E2E_PHASE="+phase,
+		"ACME_E2E_FQDN="+fqdn,
+		"ACME_E2E_DNS_VALUE="+dnsValue,
+		"ACME_E2E_TOKEN="+token,
+		"ACME_E2E_KEY_AUTHORIZATION="+keyAuthorization,
+	)
+	cmd.Args = append(cmd.Args, fqdn, dnsValue)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dns hook (%s) failed: %v\noutput:\n%s", phase, err, string(out))
+	}
+	if len(out) > 0 {
+		t.Logf("dns hook (%s) output:\n%s", phase, string(out))
+	}
+}
+
+func waitForTXTRecord(t *testing.T, fqdn, want string) {
+	t.Helper()
+
+	timeout := envDurationSeconds("ACME_E2E_DNS_TIMEOUT_SECONDS", 300)
+	interval := envDurationSeconds("ACME_E2E_DNS_POLL_SECONDS", 5)
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		txts, err := net.LookupTXT(fqdn)
+		if err == nil {
+			for _, v := range txts {
+				if v == want {
+					return
+				}
+			}
+		}
+		time.Sleep(interval)
+	}
+	t.Fatalf("TXT propagation timeout after %s for %s (wanted %q)", timeout, fqdn, want)
+}
+
+func envDurationSeconds(name string, defaultSeconds int) time.Duration {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return time.Duration(defaultSeconds) * time.Second
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		panic(fmt.Sprintf("invalid %s=%q; expected positive integer seconds", name, v))
+	}
+	return time.Duration(n) * time.Second
 
 	// When implementing fully:
 	//

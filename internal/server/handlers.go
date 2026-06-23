@@ -392,9 +392,8 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamProfile := router.ResolveUpstreamProfile(decision, req.Profile)
 
-	// Ensure the gateway has an account at this upstream and select a slot for
-	// this order using round-robin across the upstream's account pool.
-	client, slot, err := h.pool.NextClient(r.Context(), decision.UpstreamID)
+	// Bind new orders to a dedicated upstream account per gateway account.
+	client, err := h.pool.GetClientForAccount(r.Context(), decision.UpstreamID, acct.ID)
 	if err != nil {
 		h.log.Error("upstream account error", "upstream", decision.UpstreamID, "err", err)
 		h.writeError(w, errServerInternal("upstream account unavailable"))
@@ -427,7 +426,7 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		ID:               orderID,
 		AccountID:        acct.ID,
 		UpstreamID:       decision.UpstreamID,
-		UpstreamSlot:     slot,
+		UpstreamSlot:     -1,
 		UpstreamOrderURL: upOrderURL,
 		Status:           upOrder.Status,
 		Identifiers:      string(idJSON),
@@ -518,7 +517,7 @@ func (h *Handler) handleOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
+	client, err := h.orderClient(r.Context(), order)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -575,7 +574,7 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
+	client, err := h.orderClient(r.Context(), order)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -675,7 +674,7 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
+	client, err := h.orderClient(r.Context(), order)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -775,7 +774,7 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
+	client, err := h.orderClient(r.Context(), order)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -837,7 +836,7 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := h.pool.GetSlot(r.Context(), order.UpstreamID, order.UpstreamSlot)
+	client, err := h.orderClient(r.Context(), order)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -929,11 +928,15 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	// fetch the cert before they could revoke it.
 	upstreamID := h.cfg.Routing.DefaultUpstream
 	upstreamSlot := 0
+	upstreamAccountID := ""
 	fp := hex.EncodeToString(sha256sum(certDER))
 	if certRM, err := h.store.GetResourceByCertFingerprint(r.Context(), fp); err == nil && certRM != nil {
 		if certOrder, err := h.store.GetOrder(r.Context(), certRM.OrderID); err == nil && certOrder != nil {
 			upstreamID = certOrder.UpstreamID
 			upstreamSlot = certOrder.UpstreamSlot
+			if certOrder.UpstreamSlot < 0 {
+				upstreamAccountID = certOrder.AccountID
+			}
 			// For KID-based revocation, verify the requesting account owns this cert.
 			if acct != nil && certOrder.AccountID != acct.ID {
 				h.writeError(w, errUnauthorized("certificate does not belong to this account"))
@@ -953,7 +956,12 @@ func (h *Handler) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 		reason = *req.Reason
 	}
 
-	client, err := h.pool.GetSlot(r.Context(), upstreamID, upstreamSlot)
+	var client *upstream.Client
+	if upstreamAccountID != "" {
+		client, err = h.pool.GetClientForAccount(r.Context(), upstreamID, upstreamAccountID)
+	} else {
+		client, err = h.pool.GetSlot(r.Context(), upstreamID, upstreamSlot)
+	}
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
 		return
@@ -1013,6 +1021,15 @@ func (h *Handler) mustParsePublicKey(jwkJSON string) interface{} {
 		return nil
 	}
 	return jwk.Key
+}
+
+// orderClient returns the upstream client for an order, preserving backward
+// compatibility for legacy slot-routed orders.
+func (h *Handler) orderClient(ctx context.Context, order *model.Order) (*upstream.Client, error) {
+	if order.UpstreamSlot >= 0 {
+		return h.pool.GetSlot(ctx, order.UpstreamID, order.UpstreamSlot)
+	}
+	return h.pool.GetClientForAccount(ctx, order.UpstreamID, order.AccountID)
 }
 
 // buildOrderResponse constructs a gateway-local order response from an upstream order.

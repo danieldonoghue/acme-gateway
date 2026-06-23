@@ -37,7 +37,7 @@ test: ## Run unit tests with race detector
 test-e2e: ## Run end-to-end tests against Pebble (requires Docker)
 	go test -v -tags e2e -timeout 5m ./test/e2e/...
 
-test-e2e-staging: ## Run staging Let's Encrypt E2E test (requires internet + DNS; set ACME_E2E_DOMAIN and ACME_E2E_EMAIL)
+test-e2e-staging: ## Run LE staging E2E via dns-01 hooks (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; optional ACME_E2E_DNS_CLEANUP_CMD)
 	ACME_E2E_STAGING=1 go test -v -tags e2e -run TestStagingLE -timeout 10m ./test/e2e/...
 
 vet: ## Run go vet

@@ -4,10 +4,12 @@ package e2e_test
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -235,9 +237,15 @@ func (c *acmeClient) sign(t *testing.T, url string, payload interface{}) []byte 
 // register creates a new ACME account and stores the account URL.
 func (c *acmeClient) register(t *testing.T) string {
 	t.Helper()
+	return c.registerWithEmail(t, "test@example.invalid")
+}
+
+func (c *acmeClient) registerWithEmail(t *testing.T, email string) string {
+	t.Helper()
+	contact := "mailto:" + strings.TrimSpace(email)
 	resp := c.post(t, c.dir.NewAccount, map[string]interface{}{
 		"termsOfServiceAgreed": true,
-		"contact":              []string{"mailto:test@example.invalid"},
+		"contact":              []string{contact},
 	})
 	defer resp.Body.Close()
 
@@ -342,7 +350,12 @@ func hasLinkRelation(linkValues []string, rel string) bool {
 // "processing", or until the timeout elapses.
 func (c *acmeClient) pollOrder(t *testing.T, orderURL string) acmeOrder {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	return c.pollOrderWithTimeout(t, orderURL, 30*time.Second)
+}
+
+func (c *acmeClient) pollOrderWithTimeout(t *testing.T, orderURL string, timeout time.Duration) acmeOrder {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		resp := c.post(t, orderURL, nil) // POST-as-GET
 		body, _ := io.ReadAll(resp.Body)
@@ -360,7 +373,7 @@ func (c *acmeClient) pollOrder(t *testing.T, orderURL string) acmeOrder {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatal("pollOrder: timed out waiting for order to leave pending/processing")
+	t.Fatalf("pollOrder: timed out after %s waiting for order to leave pending/processing", timeout)
 	return acmeOrder{}
 }
 
@@ -368,12 +381,17 @@ func (c *acmeClient) pollOrder(t *testing.T, orderURL string) acmeOrder {
 // order until a certificate URL is available. Returns the certificate URL.
 func (c *acmeClient) finalize(t *testing.T, finalizeURL, orderURL, domain string) string {
 	t.Helper()
-	return c.finalizeWithCSRKey(t, finalizeURL, orderURL, domain, csrKeyECDSA)
+	return c.finalizeWithCSRKeyAndTimeout(t, finalizeURL, orderURL, domain, csrKeyECDSA, 30*time.Second)
 }
 
 // finalizeWithCSRKey finalizes an order using a CSR created with the selected
 // key algorithm.
 func (c *acmeClient) finalizeWithCSRKey(t *testing.T, finalizeURL, orderURL, domain string, keyAlg csrKeyAlgorithm) string {
+	t.Helper()
+	return c.finalizeWithCSRKeyAndTimeout(t, finalizeURL, orderURL, domain, keyAlg, 30*time.Second)
+}
+
+func (c *acmeClient) finalizeWithCSRKeyAndTimeout(t *testing.T, finalizeURL, orderURL, domain string, keyAlg csrKeyAlgorithm, timeout time.Duration) string {
 	t.Helper()
 
 	csrDER, err := createCSRDER(t, domain, keyAlg)
@@ -395,7 +413,7 @@ func (c *acmeClient) finalizeWithCSRKey(t *testing.T, finalizeURL, orderURL, dom
 	}
 
 	// Poll until the order transitions to "valid" and has a certificate URL.
-	order := c.pollOrder(t, orderURL)
+	order := c.pollOrderWithTimeout(t, orderURL, timeout)
 	if order.Status != "valid" {
 		if order.Error != nil {
 			t.Fatalf("order failed: %s – %s", order.Error.Type, order.Error.Detail)
@@ -406,6 +424,30 @@ func (c *acmeClient) finalizeWithCSRKey(t *testing.T, finalizeURL, orderURL, dom
 		t.Fatal("order valid but no certificate URL")
 	}
 	return order.Certificate
+}
+
+func (c *acmeClient) dns01TXTFromToken(token string) (string, string, error) {
+	pubKey, err := accountPublicKey(c.key)
+	if err != nil {
+		return "", "", err
+	}
+	jwk := jose.JSONWebKey{Key: pubKey}
+	thumbprint, err := jwk.Thumbprint(crypto.SHA256)
+	if err != nil {
+		return "", "", err
+	}
+	keyAuth := token + "." + base64.RawURLEncoding.EncodeToString(thumbprint)
+	sum := sha256.Sum256([]byte(keyAuth))
+	return keyAuth, base64.RawURLEncoding.EncodeToString(sum[:]), nil
+}
+
+func challengeByType(challenges []acmeChall, wantType string) (acmeChall, bool) {
+	for _, ch := range challenges {
+		if ch.Type == wantType {
+			return ch, true
+		}
+	}
+	return acmeChall{}, false
 }
 
 func createCSRDER(t *testing.T, domain string, keyAlg csrKeyAlgorithm) ([]byte, error) {

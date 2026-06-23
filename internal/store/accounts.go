@@ -62,6 +62,17 @@ func (s *Store) SaveUpstreamAccount(ctx context.Context, ua *model.UpstreamAccou
 	return err
 }
 
+// SaveUpstreamAccountForAccount inserts or replaces a gateway upstream account
+// bound to a specific gateway account ID.
+func (s *Store) SaveUpstreamAccountForAccount(ctx context.Context, ua *model.UpstreamAccount) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO upstream_accounts_by_account (upstream_id, account_id, account_url, private_key, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		ua.UpstreamID, ua.AccountID, ua.AccountURL, ua.PrivateKey, ua.CreatedAt.UTC().Format(time.RFC3339),
+	)
+	return err
+}
+
 // GetUpstreamAccountBySlot retrieves the gateway's account for a specific upstream and slot.
 // Returns nil, nil if not found.
 func (s *Store) GetUpstreamAccountBySlot(ctx context.Context, upstreamID string, slot int) (*model.UpstreamAccount, error) {
@@ -70,6 +81,30 @@ func (s *Store) GetUpstreamAccountBySlot(ctx context.Context, upstreamID string,
 		 FROM upstream_accounts WHERE upstream_id = ? AND slot = ?`, upstreamID, slot,
 	)
 	return scanUpstreamAccount(row)
+}
+
+// GetUpstreamAccountForAccount retrieves a gateway upstream account bound to a
+// specific gateway account ID. Returns nil, nil if not found.
+func (s *Store) GetUpstreamAccountForAccount(ctx context.Context, upstreamID, accountID string) (*model.UpstreamAccount, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT upstream_id, account_id, account_url, private_key, created_at
+		 FROM upstream_accounts_by_account WHERE upstream_id = ? AND account_id = ?`, upstreamID, accountID,
+	)
+
+	var ua model.UpstreamAccount
+	var createdAt string
+	if err := row.Scan(&ua.UpstreamID, &ua.AccountID, &ua.AccountURL, &ua.PrivateKey, &createdAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	t, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		t, _ = time.Parse("2006-01-02 15:04:05+00:00", createdAt) //nolint:errcheck
+	}
+	ua.CreatedAt = t
+	return &ua, nil
 }
 
 func scanUpstreamAccount(row *sql.Row) (*model.UpstreamAccount, error) {

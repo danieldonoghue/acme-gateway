@@ -69,6 +69,12 @@ func TestMain(m *testing.M) {
 }
 
 func runTests(m *testing.M) int {
+	if os.Getenv("ACME_E2E_STAGING") != "" {
+		// Staging tests run against Let's Encrypt over the public internet and do
+		// not require Pebble or Docker.
+		return m.Run()
+	}
+
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Fprintln(os.Stderr, "SKIP: docker not found on PATH; skipping e2e tests")
 		return 0
@@ -265,6 +271,20 @@ func newHarnessWithConfig(t *testing.T, mutate func(*config.Config)) *harness {
 	}
 	t.Cleanup(h2.close)
 	return h2
+}
+
+func newStagingHarness(t *testing.T) *harness {
+	t.Helper()
+
+	return newHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.Upstreams = map[string]config.UpstreamConfig{
+			"le-staging": {
+				DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+				ContactEmail: "test@example.invalid",
+			},
+		}
+		cfg.Routing = config.RoutingConfig{DefaultUpstream: "le-staging"}
+	})
 }
 
 func (h *harness) close() {

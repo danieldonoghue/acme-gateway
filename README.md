@@ -77,7 +77,9 @@ See [config.yaml.example](config.yaml.example) for a fully annotated configurati
 - `upstream_profile: "name"` → always send this name upstream (override)
 - `upstream_profile: "$passthrough"` → forward the inbound profile verbatim
 
-**Multiple accounts per upstream (`account_count`)** — Let's Encrypt allows 50 new orders per account per 3-hour window. A fleet where every server renews at the start of the month might exhaust that quota quicky. `account_count: N` tells the gateway to maintain N independent ACME accounts at an upstream and distribute new orders across them round-robin. Each account's keypair and registration URL are persisted in the SQLite database; the account slot is stored with every order so that subsequent operations (authz, finalize, cert, revoke) always use the matching keypair.
+**Upstream account routing for new orders** — New orders are bound to a dedicated upstream account per gateway ACME account (`upstream_id + account_id`) so challenge/account context stays consistent for strict `dns-01` validation. This avoids account-context mismatches when proxying to Let's Encrypt. See docs/decisions/0004-upstream-account-bound-routing-for-dns01.md.
+
+**Multiple accounts per upstream (`account_count`)** — `account_count` remains as a compatibility mechanism for legacy slot-routed orders (`upstream_slot >= 0`) and fallback paths. For current account-bound order creation, the gateway resolves upstream account by gateway account identity instead of round-robin slot selection.
 
 ```yaml
 upstreams:
@@ -310,10 +312,46 @@ make deb            # build .deb packages via Docker (required on macOS)
 make docker         # build + push multi-arch image (requires docker buildx)
 make test               # run unit tests with race detector
 make test-e2e           # end-to-end tests against Pebble (requires Docker)
-make test-e2e-staging   # staging Let's Encrypt E2E (requires internet + DNS)
+make test-e2e-staging   # staging Let's Encrypt E2E (dns-01 via hooks)
 make lint               # golangci-lint
 make security           # govulncheck + gosec
 ```
+
+### Staging E2E setup
+
+`make test-e2e-staging` runs `TestStagingLE` and requires dns-01 automation.
+
+Required environment variables:
+
+- `ACME_E2E_DOMAIN` — domain to issue (for example `staging.example.com`)
+- `ACME_E2E_EMAIL` — ACME account contact email
+- `ACME_E2E_DNS_PRESENT_CMD` — shell command that creates TXT for `_acme-challenge.<domain>`
+
+Optional environment variables:
+
+- `ACME_E2E_DNS_CLEANUP_CMD` — shell command to remove TXT after validation
+- `ACME_E2E_DNS_TIMEOUT_SECONDS` — propagation timeout (default `300`)
+- `ACME_E2E_DNS_POLL_SECONDS` — DNS poll interval (default `5`)
+- `ACME_E2E_ORDER_TIMEOUT_SECONDS` — order readiness timeout (default `600`)
+- `ACME_E2E_FINALIZE_TIMEOUT_SECONDS` — finalize-to-valid timeout (default `600`)
+
+Hook command contract:
+
+- Command runs via `sh -c`.
+- Positional args: `$1=<fqdn>`, `$2=<txt_value>`.
+- Env vars include `ACME_E2E_PHASE`, `ACME_E2E_FQDN`, `ACME_E2E_DNS_VALUE`, `ACME_E2E_TOKEN`, `ACME_E2E_KEY_AUTHORIZATION`.
+
+Example:
+
+```bash
+export ACME_E2E_DOMAIN=staging.example.com
+export ACME_E2E_EMAIL=ops@example.com
+export ACME_E2E_DNS_PRESENT_CMD='bash test/e2e/examples/dns_present.sh "$1" "$2"'
+export ACME_E2E_DNS_CLEANUP_CMD='bash test/e2e/examples/dns_cleanup.sh "$1" "$2"'
+make test-e2e-staging
+```
+
+See [test/e2e/examples/README.md](test/e2e/examples/README.md) for template hook scripts and DNS provider integration examples.
 
 ## References
 

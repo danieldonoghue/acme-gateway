@@ -10,6 +10,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -196,6 +197,22 @@ func (c *Client) KeyPEM() ([]byte, error) {
 // PublicJWK returns the public key as a JWK.
 func (c *Client) PublicJWK() jose.JSONWebKey {
 	return jose.JSONWebKey{Key: c.key.Public(), Algorithm: string(jose.ES256), Use: "sig"}
+}
+
+// DNS01TXTFromToken computes keyAuthorization and TXT value for a dns-01 token
+// using this client's account key.
+func (c *Client) DNS01TXTFromToken(token string) (string, string, error) {
+	if token == "" {
+		return "", "", fmt.Errorf("empty dns-01 token")
+	}
+	jwk := jose.JSONWebKey{Key: c.key.Public()}
+	thumbprint, err := jwk.Thumbprint(crypto.SHA256)
+	if err != nil {
+		return "", "", fmt.Errorf("computing JWK thumbprint: %w", err)
+	}
+	keyAuth := token + "." + base64.RawURLEncoding.EncodeToString(thumbprint)
+	sum := sha256.Sum256([]byte(keyAuth))
+	return keyAuth, base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
 // Directory fetches (and caches) the upstream ACME directory.

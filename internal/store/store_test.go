@@ -515,3 +515,116 @@ func TestResource_SaveIdempotent(t *testing.T) {
 		t.Errorf("idempotency broken: URL = %q, want %q", got.UpstreamURL, r.UpstreamURL)
 	}
 }
+
+// ── account-bound upstream accounts ───────────────────────────────────────────
+
+func TestUpstreamAccountForAccount_SaveAndGet(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	ua := &model.UpstreamAccount{
+		UpstreamID: "letsencrypt",
+		AccountID:  "acct-001",
+		AccountURL: "https://acme-v02.api.letsencrypt.org/acme/acct/12345",
+		PrivateKey: "pem-placeholder",
+		CreatedAt:  time.Now().UTC().Truncate(time.Second),
+	}
+	if err := s.SaveUpstreamAccountForAccount(ctx, ua); err != nil {
+		t.Fatalf("SaveUpstreamAccountForAccount: %v", err)
+	}
+
+	got, err := s.GetUpstreamAccountForAccount(ctx, ua.UpstreamID, ua.AccountID)
+	if err != nil {
+		t.Fatalf("GetUpstreamAccountForAccount: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil upstream account")
+	}
+	if got.AccountURL != ua.AccountURL {
+		t.Errorf("AccountURL = %q, want %q", got.AccountURL, ua.AccountURL)
+	}
+	if got.PrivateKey != ua.PrivateKey {
+		t.Errorf("PrivateKey = %q, want %q", got.PrivateKey, ua.PrivateKey)
+	}
+	if got.AccountID != ua.AccountID {
+		t.Errorf("AccountID = %q, want %q", got.AccountID, ua.AccountID)
+	}
+}
+
+func TestUpstreamAccountForAccount_GetNotFound(t *testing.T) {
+	s := newTestStore(t)
+	got, err := s.GetUpstreamAccountForAccount(context.Background(), "letsencrypt", "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatal("expected nil for missing upstream account")
+	}
+}
+
+func TestUpstreamAccountForAccount_MultipleAccounts(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Save upstream accounts for different gateway accounts
+	for i := 0; i < 3; i++ {
+		accountID := fmt.Sprintf("acct-%03d", i)
+		ua := &model.UpstreamAccount{
+			UpstreamID: "le",
+			AccountID:  accountID,
+			AccountURL: fmt.Sprintf("https://acme.example.com/acct/%d", i),
+			PrivateKey: fmt.Sprintf("key-%d", i),
+			CreatedAt:  time.Now().UTC(),
+		}
+		if err := s.SaveUpstreamAccountForAccount(ctx, ua); err != nil {
+			t.Fatalf("SaveUpstreamAccountForAccount[%d]: %v", i, err)
+		}
+	}
+
+	// Verify each can be retrieved independently
+	for i := 0; i < 3; i++ {
+		accountID := fmt.Sprintf("acct-%03d", i)
+		got, err := s.GetUpstreamAccountForAccount(ctx, "le", accountID)
+		if err != nil {
+			t.Fatalf("GetUpstreamAccountForAccount[%d]: %v", i, err)
+		}
+		if got == nil {
+			t.Fatalf("account %d: expected non-nil", i)
+		}
+		want := fmt.Sprintf("https://acme.example.com/acct/%d", i)
+		if got.AccountURL != want {
+			t.Errorf("account %d: AccountURL = %q, want %q", i, got.AccountURL, want)
+		}
+	}
+}
+
+func TestUpstreamAccountForAccount_Overwrite(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	ua := &model.UpstreamAccount{
+		UpstreamID: "le",
+		AccountID:  "acct-shared",
+		AccountURL: "https://acme.example.com/acct/original",
+		PrivateKey: "original-key",
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := s.SaveUpstreamAccountForAccount(ctx, ua); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+
+	// Update the same (upstream_id, account_id) pair
+	ua.AccountURL = "https://acme.example.com/acct/updated"
+	ua.PrivateKey = "updated-key"
+	if err := s.SaveUpstreamAccountForAccount(ctx, ua); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	got, _ := s.GetUpstreamAccountForAccount(ctx, ua.UpstreamID, ua.AccountID)
+	if got.AccountURL != "https://acme.example.com/acct/updated" {
+		t.Errorf("AccountURL = %q, want updated", got.AccountURL)
+	}
+	if got.PrivateKey != "updated-key" {
+		t.Errorf("PrivateKey = %q, want updated", got.PrivateKey)
+	}
+}

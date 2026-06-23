@@ -21,6 +21,10 @@ upstreams:
     directory_url: "https://acme-staging-v02.api.letsencrypt.org/directory"
     contact_email: "certadmin+staging@example.com"
     account_count: 1
+    # Required when clients use dns-01 against this upstream.
+    # dns_hook:
+    #   deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
+    #   cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
 
 profiles:
   tlsserver: "TLS server certificate via Let's Encrypt staging"

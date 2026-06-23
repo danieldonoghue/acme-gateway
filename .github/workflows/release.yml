@@ -107,9 +107,10 @@ jobs:
           mkdir -p release
           for arch in amd64 arm64; do
             dir="dist/acme-gateway_${VERSION}_linux_${arch}"
-            mkdir -p "${dir}"
+            mkdir -p "${dir}" "${dir}/hooks.d/examples"
             cp "dist/acme-gateway_linux_${arch}" "${dir}/acme-gateway"
             cp acme-gateway.service README.md config.yaml.example "${dir}/"
+            cp packaging/hooks.d/examples/*.sh "${dir}/hooks.d/examples/"
             tar -czf "release/acme-gateway_${VERSION}_linux_${arch}.tar.gz" \
               -C dist "acme-gateway_${VERSION}_linux_${arch}"
           done

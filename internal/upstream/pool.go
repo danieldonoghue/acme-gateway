@@ -23,9 +23,10 @@ type Pool struct {
 	cfg   *config.Config
 	store *store.Store
 
-	mu       sync.Mutex
-	clients  map[string][]*Client // keyed by upstream ID, indexed by slot
-	nextSlot map[string]int       // round-robin counter per upstream
+	mu             sync.Mutex
+	clients        map[string][]*Client          // keyed by upstream ID, indexed by slot
+	accountClients map[string]map[string]*Client // keyed by upstream ID, then gateway account ID
+	nextSlot       map[string]int                // round-robin counter per upstream
 
 	// regMu serialises the regMap itself; individual entries are per (upstream, slot).
 	regMu  sync.Mutex
@@ -35,11 +36,12 @@ type Pool struct {
 // NewPool creates a Pool from the application config.
 func NewPool(cfg *config.Config, st *store.Store) *Pool {
 	return &Pool{
-		cfg:      cfg,
-		store:    st,
-		clients:  make(map[string][]*Client),
-		nextSlot: make(map[string]int),
-		regMap:   make(map[string]*sync.Mutex),
+		cfg:            cfg,
+		store:          st,
+		clients:        make(map[string][]*Client),
+		accountClients: make(map[string]map[string]*Client),
+		nextSlot:       make(map[string]int),
+		regMap:         make(map[string]*sync.Mutex),
 	}
 }
 
@@ -47,6 +49,18 @@ func NewPool(cfg *config.Config, st *store.Store) *Pool {
 // registration. Different slots for the same upstream can register concurrently.
 func (p *Pool) slotRegLock(upstreamID string, slot int) *sync.Mutex {
 	key := fmt.Sprintf("%s:%d", upstreamID, slot)
+	p.regMu.Lock()
+	defer p.regMu.Unlock()
+	if _, ok := p.regMap[key]; !ok {
+		p.regMap[key] = &sync.Mutex{}
+	}
+	return p.regMap[key]
+}
+
+// accountRegLock returns the per-(upstream, gateway account) mutex used to
+// serialise dedicated upstream account registration.
+func (p *Pool) accountRegLock(upstreamID, accountID string) *sync.Mutex {
+	key := fmt.Sprintf("acct:%s:%s", upstreamID, accountID)
 	p.regMu.Lock()
 	defer p.regMu.Unlock()
 	if _, ok := p.regMap[key]; !ok {
@@ -103,6 +117,93 @@ func (p *Pool) GetSlot(ctx context.Context, upstreamID string, slot int) (*Clien
 // issuer is unknown).
 func (p *Pool) Get(ctx context.Context, upstreamID string) (*Client, error) {
 	return p.GetSlot(ctx, upstreamID, 0)
+}
+
+// GetClientForAccount returns a dedicated upstream client bound to a gateway
+// account ID. This is used for new orders so ACME challenge/account state is
+// isolated per gateway account.
+func (p *Pool) GetClientForAccount(ctx context.Context, upstreamID, accountID string) (*Client, error) {
+	p.mu.Lock()
+	if byAccount, ok := p.accountClients[upstreamID]; ok {
+		if c, ok := byAccount[accountID]; ok {
+			p.mu.Unlock()
+			return c, nil
+		}
+	}
+	p.mu.Unlock()
+
+	mu := p.accountRegLock(upstreamID, accountID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-check after waiting on the per-account lock.
+	p.mu.Lock()
+	if byAccount, ok := p.accountClients[upstreamID]; ok {
+		if c, ok := byAccount[accountID]; ok {
+			p.mu.Unlock()
+			return c, nil
+		}
+	}
+	p.mu.Unlock()
+
+	upCfg, ok := p.cfg.Upstreams[upstreamID]
+	if !ok {
+		return nil, fmt.Errorf("upstream %q not in config", upstreamID)
+	}
+
+	ua, err := p.store.GetUpstreamAccountForAccount(ctx, upstreamID, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("loading upstream account %q for account %q: %w", upstreamID, accountID, err)
+	}
+
+	var key *ecdsa.PrivateKey
+	if ua != nil {
+		key, err = parseECPrivateKeyPEM([]byte(ua.PrivateKey))
+		if err != nil {
+			return nil, fmt.Errorf("parsing upstream key for %q account %q: %w", upstreamID, accountID, err)
+		}
+	} else {
+		key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generating upstream key: %w", err)
+		}
+	}
+
+	client, err := p.newClientForUpstream(upstreamID, upCfg, key)
+	if err != nil {
+		return nil, err
+	}
+
+	if ua != nil {
+		client.SetAccountURL(ua.AccountURL)
+	} else {
+		accountURL, err := client.Register(ctx, upCfg.ContactEmail, upCfg.EAB)
+		if err != nil {
+			return nil, fmt.Errorf("registering with %q for account %q: %w", upstreamID, accountID, err)
+		}
+		keyPEM, err := client.KeyPEM()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.store.SaveUpstreamAccountForAccount(ctx, &model.UpstreamAccount{
+			UpstreamID: upstreamID,
+			AccountID:  accountID,
+			AccountURL: accountURL,
+			PrivateKey: string(keyPEM),
+			CreatedAt:  time.Now().UTC(),
+		}); err != nil {
+			return nil, fmt.Errorf("persisting upstream account %q for account %q: %w", upstreamID, accountID, err)
+		}
+	}
+
+	p.mu.Lock()
+	if _, ok := p.accountClients[upstreamID]; !ok {
+		p.accountClients[upstreamID] = make(map[string]*Client)
+	}
+	p.accountClients[upstreamID][accountID] = client
+	p.mu.Unlock()
+
+	return client, nil
 }
 
 // ensureSlotRegistered registers the client's ACME account if it has not yet
@@ -182,16 +283,7 @@ func (p *Pool) getOrCreateAll(ctx context.Context, upstreamID string) ([]*Client
 			}
 		}
 
-		var client *Client
-		if upCfg.CACertPath != "" {
-			hc, caErr := HTTPClientWithCACert(upCfg.CACertPath)
-			if caErr != nil {
-				return nil, fmt.Errorf("loading CA cert for upstream %q: %w", upstreamID, caErr)
-			}
-			client, err = NewWithHTTPClient(upCfg.DirectoryURL, key, hc)
-		} else {
-			client, err = New(upCfg.DirectoryURL, key)
-		}
+		client, err := p.newClientForUpstream(upstreamID, upCfg, key)
 		if err != nil {
 			return nil, err
 		}
@@ -203,6 +295,17 @@ func (p *Pool) getOrCreateAll(ctx context.Context, upstreamID string) ([]*Client
 
 	p.clients[upstreamID] = clients
 	return clients, nil
+}
+
+func (p *Pool) newClientForUpstream(upstreamID string, upCfg config.UpstreamConfig, key *ecdsa.PrivateKey) (*Client, error) {
+	if upCfg.CACertPath != "" {
+		hc, caErr := HTTPClientWithCACert(upCfg.CACertPath)
+		if caErr != nil {
+			return nil, fmt.Errorf("loading CA cert for upstream %q: %w", upstreamID, caErr)
+		}
+		return NewWithHTTPClient(upCfg.DirectoryURL, key, hc)
+	}
+	return New(upCfg.DirectoryURL, key)
 }
 
 // GenerateKeyPEM generates a fresh P-256 private key and returns the PEM encoding.

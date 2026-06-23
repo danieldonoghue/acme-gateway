@@ -9,7 +9,7 @@ LDFLAGS  := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.date=$(DATE)
 
-.PHONY: build build-linux test test-e2e test-e2e-staging vet lint security deb docker-dev docker clean help
+.PHONY: build build-linux test test-e2e test-e2e-dns01 test-e2e-staging vet lint security deb docker-dev docker clean help
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -35,10 +35,13 @@ test: ## Run unit tests with race detector
 	go test -race -count=1 ./...
 
 test-e2e: ## Run end-to-end tests against Pebble (requires Docker)
-	go test -v -tags e2e -timeout 5m ./test/e2e/...
+	ACME_E2E_COMPOSE_PROFILE=always-valid go test -v -tags e2e -timeout 5m ./test/e2e/...
 
-test-e2e-staging: ## Run staging Let's Encrypt E2E test (requires internet + DNS; set ACME_E2E_DOMAIN and ACME_E2E_EMAIL)
-	ACME_E2E_STAGING=1 go test -v -tags e2e -run TestStagingLE -timeout 10m ./test/e2e/...
+test-e2e-dns01: ## Run Pebble dns-01 test with real DNS validation via BIND (requires Docker + nsupdate)
+	ACME_E2E_PEBBLE_DNS=1 ACME_E2E_COMPOSE_PROFILE=dns-challenge ACME_E2E_PEBBLE_DNS_PRESENT_CMD='sh $(PWD)/test/e2e/examples/dns_present_pebble.sh' ACME_E2E_PEBBLE_DNS_CLEANUP_CMD='sh $(PWD)/test/e2e/examples/dns_cleanup_pebble.sh' go test -v -tags e2e -run TestPebbleDNS01 -timeout 5m ./test/e2e/...
+
+test-e2e-staging: ## Run LE staging E2E via dns-01 hooks (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; optional ACME_E2E_DNS_CLEANUP_CMD)
+	ACME_E2E_STAGING=1 ACME_E2E_COMPOSE_PROFILE=always-valid go test -v -tags e2e -run TestStagingLE -timeout 10m ./test/e2e/...
 
 vet: ## Run go vet
 	go vet ./...
@@ -55,6 +58,10 @@ security: ## Run govulncheck + gosec (requires both in PATH)
 
 deb: build-linux ## Build .deb packages for Debian 12/13 × amd64/arm64 (uses Docker)
 	@chmod +x packaging/build-deb.sh
+	@if [[ ! -d "packaging/hooks.d/examples" ]] || [[ -z "$$(ls -A packaging/hooks.d/examples/*.sh 2>/dev/null)" ]]; then \
+		echo "Error: example DNS hooks not found in packaging/hooks.d/examples/" >&2; \
+		exit 1; \
+	fi
 	@DEB_VERSION="$(subst v,,$(VERSION))"; \
 	docker run --rm \
 		-v "$(PWD):/workspace" \

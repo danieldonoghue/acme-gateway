@@ -64,20 +64,34 @@ go build -o acme-gateway ./cmd/acme-gateway
 ./acme-gateway -config config.yaml
 ```
 
+## DNS Hooks
+
+DNS hooks are operator-provided scripts used for dns-01 TXT publication.
+
+- Configure `upstreams.<name>.dns_hook` for client orders routed to dns-01 upstreams.
+- Configure `bootstrap.dns_hook` only when `bootstrap.enabled: true`.
+- Hook scripts receive `CERTBOT_DOMAIN`, `CERTBOT_VALIDATION`, and `CERTBOT_TOKEN` (plus `ACME_GATEWAY_*` aliases).
+
+Why this exists: with account-bound upstream routing, upstream CAs validate TXT values derived from the gateway's upstream account key, not the client's key. The gateway must publish the upstream-derived TXT value.
+
+Details:
+- Architecture and decision rationale: [docs/decisions/0005-gateway-managed-dns01-hooks.md](docs/decisions/0005-gateway-managed-dns01-hooks.md)
+- Example hook scripts: [packaging/hooks.d/examples](packaging/hooks.d/examples)
+- Hook customization guide: [test/e2e/examples/README.md](test/e2e/examples/README.md)
+
 ## Configuration
 
-See [config.yaml.example](config.yaml.example) for a fully annotated configuration file.
+See [config.yaml.example](config.yaml.example) for the full annotated configuration.
 
 ### Key concepts
-
-**Profile namespace** — Profile names (`tlsserver`, `tlsclient`, etc.) are defined entirely by the operator in the `profiles` block. They are advertised in the gateway's `/directory` and have no required relationship to any upstream CA's profile names.
-
 **Upstream profile mapping** — Per routing rule:
 - Omit `upstream_profile` → strip (send no profile field upstream, CA uses its default)
 - `upstream_profile: "name"` → always send this name upstream (override)
 - `upstream_profile: "$passthrough"` → forward the inbound profile verbatim
 
-**Multiple accounts per upstream (`account_count`)** — Let's Encrypt allows 50 new orders per account per 3-hour window. A fleet where every server renews at the start of the month might exhaust that quota quicky. `account_count: N` tells the gateway to maintain N independent ACME accounts at an upstream and distribute new orders across them round-robin. Each account's keypair and registration URL are persisted in the SQLite database; the account slot is stored with every order so that subsequent operations (authz, finalize, cert, revoke) always use the matching keypair.
+**Upstream account routing for new orders** — New orders are bound to a dedicated upstream account per gateway ACME account (`upstream_id + account_id`) so challenge/account context stays consistent for strict `dns-01` validation. This avoids account-context mismatches when proxying to Let's Encrypt. See docs/decisions/0004-upstream-account-bound-routing-for-dns01.md.
+
+**Multiple accounts per upstream (`account_count`)** — `account_count` remains as a compatibility mechanism for legacy slot-routed orders (`upstream_slot >= 0`) and fallback paths. For current account-bound order creation, the gateway resolves upstream account by gateway account identity instead of round-robin slot selection.
 
 ```yaml
 upstreams:
@@ -129,15 +143,7 @@ Set `server.tls: false` to disable TLS termination at the gateway entirely. The 
 
 ### DNS hook scripts
 
-Hook scripts are called with the same environment variables as Certbot's manual DNS hooks:
-
-| Variable | Description |
-|---|---|
-| `CERTBOT_DOMAIN` | Domain being validated |
-| `CERTBOT_VALIDATION` | TXT record value to set |
-| `CERTBOT_TOKEN` | Challenge token |
-
-The deploy script must be idempotent. The cleanup script is called after the challenge completes (success or failure).
+Bootstrap uses the same dns-01 hook mechanism documented in [DNS Hooks](README.md#dns-hooks). Configure `bootstrap.dns_hook` when `bootstrap.enabled: true`.
 
 ## Deployment
 
@@ -288,13 +294,15 @@ The workflow will:
 
 | Artifact | Description |
 |---|---|
-| `acme-gateway_vX.Y.Z_linux_amd64.tar.gz` | Binary + systemd unit + config example |
+| `acme-gateway_vX.Y.Z_linux_amd64.tar.gz` | Binary + systemd unit + config example + DNS hook examples |
 | `acme-gateway_vX.Y.Z_linux_arm64.tar.gz` | Same for arm64 |
 | `acme-gateway_X.Y.Z_debian12_amd64.deb` | Debian 12 package |
 | `acme-gateway_X.Y.Z_debian12_arm64.deb` | Debian 12 arm64 package |
 | `acme-gateway_X.Y.Z_debian13_amd64.deb` | Debian 13 package |
 | `acme-gateway_X.Y.Z_debian13_arm64.deb` | Debian 13 arm64 package |
 | `checksums.txt` | SHA-256 checksums for all artifacts |
+
+Tarballs place example hooks under `hooks.d/examples/`; Debian packages install them under `/etc/acme-gateway/hooks.d/examples/`.
 
 Docker images are pushed to `ghcr.io/danieldonoghue/acme-gateway` with tags `vX.Y.Z`, `X.Y`, and `X`.
 
@@ -310,10 +318,75 @@ make deb            # build .deb packages via Docker (required on macOS)
 make docker         # build + push multi-arch image (requires docker buildx)
 make test               # run unit tests with race detector
 make test-e2e           # end-to-end tests against Pebble (requires Docker)
-make test-e2e-staging   # staging Let's Encrypt E2E (requires internet + DNS)
+make test-e2e-dns01     # Pebble dns-01 with real DNS validation via local BIND
+make test-e2e-staging   # staging Let's Encrypt E2E (dns-01 via hooks)
 make lint               # golangci-lint
 make security           # govulncheck + gosec
 ```
+
+### Local DNS-01 E2E setup (TestPebbleDNS01)
+
+`make test-e2e-dns01` runs `TestPebbleDNS01` against Pebble with **real dns-01 validation** using a local BIND DNS server.
+
+Prerequisites:
+- Docker with `docker-compose` v2
+
+Run:
+```bash
+make test-e2e-dns01
+```
+
+This test:
+- Spins up BIND in a container (serves `pebble-test.local` zone)
+- Creates an order for `test.pebble-test.local`
+- Uses dns-01 challenge with `nsupdate` to dynamically manage TXT records
+- Forces Pebble to query BIND for validation (real DNS lookup, not fake)
+- Validates end-to-end flow: account → order → challenge → DNS validation → cert
+
+**Benefits over staging:**
+- ✅ Fast (~10-20s vs 5-10 min)
+- ✅ No internet required
+- ✅ No LE infrastructure issues
+- ✅ Repeatable, deterministic
+- ✅ Great for CI/CD
+
+See [test/e2e/bind/README.md](test/e2e/bind/README.md) for details and troubleshooting.
+
+### Staging E2E setup
+
+`make test-e2e-staging` runs `TestStagingLE` against real Let's Encrypt staging and requires dns-01 automation.
+
+Required environment variables:
+
+- `ACME_E2E_DOMAIN` — domain to issue (for example `staging.example.com`)
+- `ACME_E2E_EMAIL` — ACME account contact email
+- `ACME_E2E_DNS_PRESENT_CMD` — shell command that creates TXT for `_acme-challenge.<domain>`
+
+Optional environment variables:
+
+- `ACME_E2E_DNS_CLEANUP_CMD` — shell command to remove TXT after validation
+- `ACME_E2E_DNS_TIMEOUT_SECONDS` — propagation timeout (default `300`)
+- `ACME_E2E_DNS_POLL_SECONDS` — DNS poll interval (default `5`)
+- `ACME_E2E_ORDER_TIMEOUT_SECONDS` — order readiness timeout (default `600`)
+- `ACME_E2E_FINALIZE_TIMEOUT_SECONDS` — finalize-to-valid timeout (default `600`)
+
+Hook command contract:
+
+- Command runs via `sh -c`.
+- Positional args: `$1=<fqdn>`, `$2=<txt_value>`.
+- Env vars include `ACME_E2E_PHASE`, `ACME_E2E_FQDN`, `ACME_E2E_DNS_VALUE`, `ACME_E2E_TOKEN`, `ACME_E2E_KEY_AUTHORIZATION`.
+
+Example:
+
+```bash
+export ACME_E2E_DOMAIN=staging.example.com
+export ACME_E2E_EMAIL=ops@example.com
+export ACME_E2E_DNS_PRESENT_CMD='bash ./test/e2e/examples/dns_present.sh "$1" "$2"'
+export ACME_E2E_DNS_CLEANUP_CMD='bash ./test/e2e/examples/dns_cleanup.sh "$1" "$2"'
+make test-e2e-staging
+```
+
+See [test/e2e/examples/README.md](test/e2e/examples/README.md) for template hook scripts and DNS provider integration examples.
 
 ## References
 

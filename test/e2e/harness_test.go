@@ -41,6 +41,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,12 @@ func TestMain(m *testing.M) {
 }
 
 func runTests(m *testing.M) int {
+	if os.Getenv("ACME_E2E_STAGING") != "" {
+		// Staging tests run against Let's Encrypt over the public internet and do
+		// not require Pebble or Docker.
+		return m.Run()
+	}
+
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Fprintln(os.Stderr, "SKIP: docker not found on PATH; skipping e2e tests")
 		return 0
@@ -76,7 +83,16 @@ func runTests(m *testing.M) int {
 
 	// ── Start Pebble ──────────────────────────────────────────────────────────
 	composeDir := "."
-	up := exec.Command("docker", "compose", "-f", "docker-compose.yml", "up", "-d")
+	args := []string{"compose", "-f", "docker-compose.yml"}
+
+	// Add profile if specified (ACME_E2E_COMPOSE_PROFILE env var)
+	// Profiles: "always-valid" for standard tests, "dns-challenge" for DNS-01 tests
+	if profile := os.Getenv("ACME_E2E_COMPOSE_PROFILE"); profile != "" {
+		args = append(args, "--profile", profile)
+	}
+	args = append(args, "up", "-d")
+
+	up := exec.Command("docker", args...)
 	up.Dir = composeDir
 	up.Stdout = os.Stderr
 	up.Stderr = os.Stderr
@@ -85,7 +101,12 @@ func runTests(m *testing.M) int {
 		return 1
 	}
 	defer func() {
-		down := exec.Command("docker", "compose", "-f", "docker-compose.yml", "down", "--remove-orphans")
+		args := []string{"compose", "-f", "docker-compose.yml"}
+		if profile := os.Getenv("ACME_E2E_COMPOSE_PROFILE"); profile != "" {
+			args = append(args, "--profile", profile)
+		}
+		args = append(args, "down", "--remove-orphans")
+		down := exec.Command("docker", args...)
 		down.Dir = composeDir
 		down.Run() //nolint:errcheck,gosec
 	}()
@@ -110,14 +131,21 @@ func runTests(m *testing.M) int {
 
 	// Resolve the container ID via compose so we are not coupled to the
 	// generated name (which varies with COMPOSE_PROJECT_NAME, working dir, etc.).
-	psOut, err := exec.CommandContext(context.Background(),
-		"docker", "compose", "-f", "docker-compose.yml", "ps", "-q", "pebble",
-	).Output()
-	if err != nil || len(bytes.TrimSpace(psOut)) == 0 {
-		fmt.Fprintf(os.Stderr, "resolving pebble container ID: %v\n", err)
+	// Try "pebble-dns" first (dns-challenge profile), then "pebble" (always-valid profile).
+	var pebbleContainerID string
+	for _, service := range []string{"pebble-dns", "pebble"} {
+		psOut, err := exec.CommandContext(context.Background(),
+			"docker", "compose", "-f", "docker-compose.yml", "ps", "-q", service,
+		).Output()
+		if err == nil && len(bytes.TrimSpace(psOut)) > 0 {
+			pebbleContainerID = string(bytes.TrimSpace(psOut))
+			break
+		}
+	}
+	if pebbleContainerID == "" {
+		fmt.Fprintf(os.Stderr, "resolving pebble container ID: no pebble service running\n")
 		return 1
 	}
-	pebbleContainerID := string(bytes.TrimSpace(psOut))
 
 	pebbleTLSCAFile := filepath.Join(tmpDir, "pebble-tls-ca.pem")
 	cpCmd := exec.Command("docker", "cp", pebbleContainerID+":/test/certs/pebble.minica.pem", pebbleTLSCAFile)
@@ -225,7 +253,7 @@ func newHarnessWithConfig(t *testing.T, mutate func(*config.Config)) *harness {
 		t.Fatalf("store.New: %v", err)
 	}
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r := router.New(&cfg.Routing)
 	pool := upstream.NewPool(cfg, st)
 	h := server.NewHandler(cfg, st, r, pool, log)
@@ -265,6 +293,83 @@ func newHarnessWithConfig(t *testing.T, mutate func(*config.Config)) *harness {
 	}
 	t.Cleanup(h2.close)
 	return h2
+}
+
+func newStagingHarness(t *testing.T) *harness {
+	t.Helper()
+
+	email := os.Getenv("ACME_E2E_EMAIL")
+	if email == "" {
+		email = "test@example.com" // fallback for tests that don't set it
+	}
+	presentCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_PRESENT_CMD"))
+	if presentCmd == "" {
+		t.Fatal("ACME_E2E_DNS_PRESENT_CMD must be set when running staging tests")
+	}
+	cleanupCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_CLEANUP_CMD"))
+
+	presentWrapper := writeDNSHookWrapper(t, presentCmd, "present")
+	cleanupWrapper := ""
+	if cleanupCmd != "" {
+		cleanupWrapper = writeDNSHookWrapper(t, cleanupCmd, "cleanup")
+	}
+
+	return newHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.Upstreams = map[string]config.UpstreamConfig{
+			"le-staging": {
+				DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+				ContactEmail: email,
+				DNSHook: config.DNSHook{
+					DeployScript:  presentWrapper,
+					CleanupScript: cleanupWrapper,
+				},
+			},
+		}
+		cfg.Routing = config.RoutingConfig{DefaultUpstream: "le-staging"}
+	})
+}
+
+func writeDNSHookWrapper(t *testing.T, command, phase string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dns-hook-wrapper-"+phase+".sh")
+	content := strings.Join([]string{
+		"#!/bin/sh",
+		"set -e",
+		"",
+		"# Bridge gateway hook env vars to legacy ACME_E2E_* script inputs.",
+		"export ACME_E2E_PHASE=\"" + phase + "\"",
+		"export ACME_E2E_FQDN=\"${ACME_GATEWAY_FQDN:-${CERTBOT_DOMAIN:-}}\"",
+		"export ACME_E2E_DNS_VALUE=\"${ACME_GATEWAY_DNS_VALUE:-${CERTBOT_VALIDATION:-}}\"",
+		"export ACME_E2E_TOKEN=\"${ACME_GATEWAY_TOKEN:-${CERTBOT_TOKEN:-}}\"",
+		"",
+		"# Forward positional args from gateway. Drop the optional leading \"--\"",
+		"# sentinel so legacy scripts still receive fqdn as $1 and value as $2.",
+		"if [ \"${1:-}\" = \"--\" ]; then",
+		"  shift",
+		"fi",
+		command + " \"$@\"",
+		"",
+		"# Give authoritative DNS time to converge before upstream challenge trigger.",
+		"if [ \"$ACME_E2E_PHASE\" = \"present\" ]; then",
+		"  delay=\"${ACME_E2E_DNS_PROPAGATION_SECONDS:-30}\"",
+		"  case \"$delay\" in",
+		"    ''|*[!0-9]*) delay=30 ;;",
+		"  esac",
+		"  if [ \"$delay\" -gt 0 ]; then",
+		"    sleep \"$delay\"",
+		"  fi",
+		"fi",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("writing dns hook wrapper: %v", err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod dns hook wrapper: %v", err)
+	}
+	return path
 }
 
 func (h *harness) close() {

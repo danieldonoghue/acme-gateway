@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS upstream_accounts (
   PRIMARY KEY (upstream_id, slot)
 );
 
+CREATE TABLE IF NOT EXISTS upstream_accounts_by_account (
+	upstream_id TEXT NOT NULL,
+	account_id  TEXT NOT NULL,
+	account_url TEXT NOT NULL,
+	private_key TEXT NOT NULL,
+	created_at  TEXT NOT NULL,
+	PRIMARY KEY (upstream_id, account_id)
+);
+
 CREATE TABLE IF NOT EXISTS orders (
   id                 TEXT    PRIMARY KEY,
   account_id         TEXT    NOT NULL,

@@ -34,6 +34,13 @@ upstreams:
     contact_email: "certadmin@example.com"
     # Spread orders across N independent ACME accounts (50 orders/account/3 h).
     account_count: 3
+    # Required when clients use dns-01 against this upstream. The gateway derives
+    # the TXT value from the upstream account key and calls these scripts to
+    # publish and remove the record. Scripts must exist inside the container
+    # (mount via a ConfigMap/Secret or bake into a custom image).
+    # dns_hook:
+    #   deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
+    #   cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
 
   # Example: private CA with EAB authentication.
   # Uncomment and populate once the acme-gateway-eab Secret exists.

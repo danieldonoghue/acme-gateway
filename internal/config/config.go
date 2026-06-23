@@ -78,6 +78,11 @@ type UpstreamConfig struct {
 	DirectoryURL string     `yaml:"directory_url"`
 	ContactEmail string     `yaml:"contact_email"`
 	EAB          *EABConfig `yaml:"eab,omitempty"`
+	// DNSHook optionally enables gateway-managed dns-01 presentation for this
+	// upstream. When configured, the gateway will publish TXT records for
+	// dns-01 challenges using the upstream account key context, which is
+	// required when account-bound upstream routing is enabled.
+	DNSHook DNSHook `yaml:"dns_hook,omitempty"`
 	// AccountCount is the number of independent ACME accounts to maintain at
 	// this upstream. Multiple accounts spread new-order rate limits across
 	// accounts (e.g. Let's Encrypt allows 50 new orders per account per 3 h).

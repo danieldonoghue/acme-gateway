@@ -129,6 +129,13 @@ upstreams:
       key_id: {{ $u.eab.keyID | quote }}
       hmac_key: {{ $u.eab.hmacKey | quote }}
 {{- end }}
+{{- if $u.dnsHook }}
+    dns_hook:
+      deploy_script: {{ $u.dnsHook.deployScript | quote }}
+{{- if $u.dnsHook.cleanupScript }}
+      cleanup_script: {{ $u.dnsHook.cleanupScript | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 profiles:

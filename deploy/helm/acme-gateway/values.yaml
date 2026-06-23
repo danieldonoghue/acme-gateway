@@ -106,11 +106,23 @@ config:
       # 50 new orders / account / 3 h; accountCount: 3 → 150 orders / 3 h).
       # Only valid for upstreams without EAB (e.g. Let's Encrypt).
       accountCount: 1
+      # -- dns-01 hook scripts for this upstream. Required when any client uses
+      # dns-01 against this upstream. The gateway calls deployScript to publish
+      # the TXT record (derived from the upstream account key) before triggering
+      # the upstream CA, then calls cleanupScript once the authz leaves pending.
+      # Scripts must be available inside the container; mount them via dnsHooks
+      # (below) or a custom image. See packaging/hooks.d/examples/ for templates.
+      # dnsHook:
+      #   deployScript: "/etc/acme-gateway/hooks/deploy-dns.sh"
+      #   cleanupScript: "/etc/acme-gateway/hooks/cleanup-dns.sh"
     # -- Example: Let's Encrypt staging (for testing)
     # letsencrypt-staging:
     #   directoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"
     #   contactEmail: "certadmin@example.com"
     #   accountCount: 1
+    #   dnsHook:
+    #     deployScript: "/etc/acme-gateway/hooks/deploy-dns.sh"
+    #     cleanupScript: "/etc/acme-gateway/hooks/cleanup-dns.sh"
     #
     # -- Example: Private CA with EAB
     # private-ca:

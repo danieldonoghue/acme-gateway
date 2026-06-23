@@ -19,7 +19,7 @@ fi
 docker exec e2e-bind-1 nsupdate <<EOF
 server localhost 53
 zone pebble-test.local
-update add $FQDN 60 TXT "$DNS_VALUE"
+update add $FQDN 60 IN TXT "$DNS_VALUE"
 send
 EOF
 

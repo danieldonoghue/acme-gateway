@@ -19,7 +19,7 @@ fi
 docker exec e2e-bind-1 nsupdate <<EOF
 server localhost 53
 zone pebble-test.local
-update delete $FQDN TXT "$DNS_VALUE"
+update delete $FQDN IN TXT "$DNS_VALUE"
 send
 EOF
 

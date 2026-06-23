@@ -1,8 +1,14 @@
 # Pebble: Let's Encrypt's lightweight ACME CA for integration testing.
 #
-# PEBBLE_VA_ALWAYS_VALID=1 skips actual HTTP/DNS challenge validation so tests
-# can exercise the full ACME protocol flow without a real public endpoint.
-# Never use this mode against any environment other than local testing.
+# PROFILES:
+# - always-valid: Pebble skips validation (PEBBLE_VA_ALWAYS_VALID=1) for quick protocol testing
+# - dns-challenge: Pebble with real DNS validation via local BIND (for TestPebbleDNS01)
+#
+# Usage:
+#   docker compose --profile always-valid up    # Standard e2e/staging tests
+#   docker compose --profile dns-challenge up   # DNS-01 validation test with BIND
+#
+# Never use these for production - they are for local testing only.
 
 networks:
   pebble-test:
@@ -12,32 +18,56 @@ networks:
         - subnet: 172.25.0.0/16
 
 services:
-  # BIND DNS server for dns-01 validation testing (TestPebbleDNS01).
-  # Set PEBBLE_VA_ALWAYS_VALID=0 to enable real DNS validation.
+  # BIND DNS server: only runs with dns-challenge profile
+  # Provides authoritative DNS for _acme-challenge subdomain lookups
   bind:
     build:
       context: ./bind
       dockerfile: Dockerfile
+    profiles:
+      - dns-challenge
     networks:
       pebble-test:
         ipv4_address: 172.25.0.10
     environment:
       TZ: UTC
 
+  # Pebble with validation skipped (always returns valid)
+  # Used for standard e2e and staging tests that don't exercise DNS validation
   pebble:
     image: ghcr.io/letsencrypt/pebble:latest
+    profiles:
+      - always-valid
     ports:
       - "14000:14000"  # ACME directory (TLS)
       - "15000:15000"  # Management API – root CA cert available at /roots/0
     networks:
       pebble-test:
-    dns:
-      - 172.25.0.10  # BIND server IP for dns-01 validation
     environment:
       PEBBLE_VA_NOSLEEP: "1"
-      PEBBLE_VA_ALWAYS_VALID: ${PEBBLE_VA_ALWAYS_VALID:-1}
-    command: ["-dnsserver", "172.25.0.10:53"]
-    # For dns-01 tests (TestPebbleDNS01), set PEBBLE_VA_ALWAYS_VALID=0
-    # and Pebble will query 172.25.0.10:53 (BIND) for DNS validation
+      PEBBLE_VA_ALWAYS_VALID: "true"
+
+  # Pebble with real DNS validation via BIND
+  # Used for TestPebbleDNS01 to validate dns-01 challenges
+  pebble-dns:
+    image: ghcr.io/letsencrypt/pebble:latest
+    profiles:
+      - dns-challenge
+    ports:
+      - "14000:14000"  # ACME directory (TLS)
+      - "15000:15000"  # Management API – root CA cert available at /roots/0
+    networks:
+      pebble-test:
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
+      # Enable real DNS validation (environment variable from Pebble's VA init)
+      PEBBLE_VA_ALWAYS_VALID: "0"
+    volumes:
+      - ./pebble-config.json:/pebble-config.json:ro
+    command:
+      - -config
+      - /pebble-config.json
+      - -dnsserver
+      - 172.25.0.10:53
     depends_on:
       - bind

@@ -82,7 +82,16 @@ func runTests(m *testing.M) int {
 
 	// ── Start Pebble ──────────────────────────────────────────────────────────
 	composeDir := "."
-	up := exec.Command("docker", "compose", "-f", "docker-compose.yml", "up", "-d")
+	args := []string{"compose", "-f", "docker-compose.yml"}
+
+	// Add profile if specified (ACME_E2E_COMPOSE_PROFILE env var)
+	// Profiles: "always-valid" for standard tests, "dns-challenge" for DNS-01 tests
+	if profile := os.Getenv("ACME_E2E_COMPOSE_PROFILE"); profile != "" {
+		args = append(args, "--profile", profile)
+	}
+	args = append(args, "up", "-d")
+
+	up := exec.Command("docker", args...)
 	up.Dir = composeDir
 	up.Stdout = os.Stderr
 	up.Stderr = os.Stderr
@@ -91,7 +100,12 @@ func runTests(m *testing.M) int {
 		return 1
 	}
 	defer func() {
-		down := exec.Command("docker", "compose", "-f", "docker-compose.yml", "down", "--remove-orphans")
+		args := []string{"compose", "-f", "docker-compose.yml"}
+		if profile := os.Getenv("ACME_E2E_COMPOSE_PROFILE"); profile != "" {
+			args = append(args, "--profile", profile)
+		}
+		args = append(args, "down", "--remove-orphans")
+		down := exec.Command("docker", args...)
 		down.Dir = composeDir
 		down.Run() //nolint:errcheck,gosec
 	}()
@@ -116,14 +130,21 @@ func runTests(m *testing.M) int {
 
 	// Resolve the container ID via compose so we are not coupled to the
 	// generated name (which varies with COMPOSE_PROJECT_NAME, working dir, etc.).
-	psOut, err := exec.CommandContext(context.Background(),
-		"docker", "compose", "-f", "docker-compose.yml", "ps", "-q", "pebble",
-	).Output()
-	if err != nil || len(bytes.TrimSpace(psOut)) == 0 {
-		fmt.Fprintf(os.Stderr, "resolving pebble container ID: %v\n", err)
+	// Try "pebble-dns" first (dns-challenge profile), then "pebble" (always-valid profile).
+	var pebbleContainerID string
+	for _, service := range []string{"pebble-dns", "pebble"} {
+		psOut, err := exec.CommandContext(context.Background(),
+			"docker", "compose", "-f", "docker-compose.yml", "ps", "-q", service,
+		).Output()
+		if err == nil && len(bytes.TrimSpace(psOut)) > 0 {
+			pebbleContainerID = string(bytes.TrimSpace(psOut))
+			break
+		}
+	}
+	if pebbleContainerID == "" {
+		fmt.Fprintf(os.Stderr, "resolving pebble container ID: no pebble service running\n")
 		return 1
 	}
-	pebbleContainerID := string(bytes.TrimSpace(psOut))
 
 	pebbleTLSCAFile := filepath.Join(tmpDir, "pebble-tls-ca.pem")
 	cpCmd := exec.Command("docker", "cp", pebbleContainerID+":/test/certs/pebble.minica.pem", pebbleTLSCAFile)

@@ -15,8 +15,8 @@ if [ -z "$FQDN" ] || [ -z "$DNS_VALUE" ]; then
   exit 1
 fi
 
-# Use docker exec to run nsupdate inside the bind container
-docker exec e2e-bind-1 nsupdate <<EOF
+# Use docker exec with stdin attached so nsupdate reads the heredoc.
+docker exec -i e2e-bind-1 nsupdate <<EOF
 server localhost 53
 zone pebble-test.local
 update delete $FQDN IN TXT "$DNS_VALUE"

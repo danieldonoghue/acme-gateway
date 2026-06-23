@@ -4,6 +4,11 @@ package e2e_test
 
 import (
 	"context"
+	"crypto"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +19,7 @@ import (
 	"time"
 
 	"github.com/danieldonoghue/acme-gateway/internal/config"
+	"github.com/go-jose/go-jose/v4"
 )
 
 // TestPebbleFullFlow exercises the complete RFC 8555 certificate issuance flow
@@ -462,6 +468,64 @@ func waitForTXTRecord(t *testing.T, fqdn, want string) {
 	t.Fatalf("TXT propagation timeout after %s for %s (wanted %q)", timeout, fqdn, want)
 }
 
+func waitForTXTRecordInBind(t *testing.T, fqdn, want string) {
+	t.Helper()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
+		cmd := exec.Command("docker", "exec", "e2e-bind-1", "dig", "+short", "@localhost", fqdn, "TXT")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				v := strings.TrimSpace(strings.Trim(line, "\""))
+				if v == want {
+					t.Logf("BIND confirmed TXT for %s after %d attempt(s)", fqdn, attempt)
+					return
+				}
+			}
+			if attempt == 1 || attempt%5 == 0 {
+				t.Logf("BIND TXT not ready yet for %s (attempt %d), dig=%q", fqdn, attempt, strings.TrimSpace(string(out)))
+			}
+		} else if attempt == 1 || attempt%5 == 0 {
+			t.Logf("BIND TXT check failed for %s (attempt %d): %v", fqdn, attempt, err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	t.Fatalf("timeout waiting for BIND TXT record for %s (wanted %q)", fqdn, want)
+}
+
+func dns01TXTFromTokenAndPEMKey(token string, keyPEM []byte) (string, string, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return "", "", fmt.Errorf("decode PEM: no key block")
+	}
+
+	keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		ecKey, ecErr := x509.ParseECPrivateKey(block.Bytes)
+		if ecErr != nil {
+			return "", "", fmt.Errorf("parse private key: %w", err)
+		}
+		keyAny = ecKey
+	}
+
+	pubKey, err := accountPublicKey(keyAny)
+	if err != nil {
+		return "", "", err
+	}
+	jwk := jose.JSONWebKey{Key: pubKey}
+	thumbprint, err := jwk.Thumbprint(crypto.SHA256)
+	if err != nil {
+		return "", "", err
+	}
+
+	keyAuth := token + "." + base64.RawURLEncoding.EncodeToString(thumbprint)
+	sum := sha256.Sum256([]byte(keyAuth))
+	return keyAuth, base64.RawURLEncoding.EncodeToString(sum[:]), nil
+}
+
 // TestPebbleDNS01 exercises full issuance against Pebble using dns-01 challenges
 // with real DNS validation via BIND (not PEBBLE_VA_ALWAYS_VALID).
 //
@@ -494,6 +558,14 @@ func TestPebbleDNS01(t *testing.T) {
 	const domain = "test.pebble-test.local"
 	order, orderURL := client.newOrder(t, domain)
 	t.Logf("pebble dns-01 order: %s (status=%s)", orderURL, order.Status)
+	accountID := strings.TrimPrefix(accountURL, h.GatewayURL+"/account/")
+	ua, err := h.st.GetUpstreamAccountForAccount(context.Background(), "pebble", accountID)
+	if err != nil {
+		t.Fatalf("loading bound upstream account for %s: %v", accountID, err)
+	}
+	if ua == nil {
+		t.Fatalf("no bound upstream account found for gateway account %s after order creation", accountID)
+	}
 	if len(order.Authorizations) == 0 {
 		t.Fatal("order has no authorizations")
 	}
@@ -516,10 +588,15 @@ func TestPebbleDNS01(t *testing.T) {
 			t.Fatalf("dns-01 challenge not offered; available=%v", available)
 		}
 
-		keyAuth, dnsValue, err := client.dns01TXTFromToken(dnsCh.Token)
+		_, gatewayDNSValue, err := client.dns01TXTFromToken(dnsCh.Token)
 		if err != nil {
-			t.Fatalf("computing dns-01 TXT value: %v", err)
+			t.Fatalf("computing gateway dns-01 TXT value: %v", err)
 		}
+		keyAuth, dnsValue, err := dns01TXTFromTokenAndPEMKey(dnsCh.Token, []byte(ua.PrivateKey))
+		if err != nil {
+			t.Fatalf("computing upstream dns-01 TXT value: %v", err)
+		}
+		t.Logf("dns-01 TXT values: gateway=%s upstream=%s", gatewayDNSValue, dnsValue)
 
 		// Use BIND hooks to add TXT record dynamically
 		fqdn := "_acme-challenge." + strings.TrimSuffix(domain, ".")
@@ -539,9 +616,9 @@ func TestPebbleDNS01(t *testing.T) {
 			})
 		}
 
-		// Wait briefly for propagation to BIND
-		t.Logf("waiting 2 seconds for DNS propagation to BIND...")
-		time.Sleep(2 * time.Second)
+		// Wait until BIND is actually serving the TXT record before triggering Pebble.
+		t.Logf("waiting for TXT record visibility in BIND...")
+		waitForTXTRecordInBind(t, fqdn, dnsValue)
 
 		t.Logf("triggering pebble dns-01 challenge: %s", dnsCh.URL)
 		client.triggerChallenge(t, dnsCh.URL)
@@ -556,8 +633,16 @@ func TestPebbleDNS01(t *testing.T) {
 		}
 		for _, authzURL := range order.Authorizations {
 			a := client.getAuthz(t, authzURL)
+			t.Logf("pebble dns-01 authz status: url=%s status=%s", authzURL, a.Status)
 			if a.Error != nil {
 				t.Logf("pebble dns-01 authz error: type=%s detail=%s", a.Error.Type, a.Error.Detail)
+			}
+			for _, ch := range a.Challenges {
+				if ch.Error != nil {
+					t.Logf("pebble dns-01 challenge error: type=%s url=%s status=%s problemType=%s detail=%s", ch.Type, ch.URL, ch.Status, ch.Error.Type, ch.Error.Detail)
+					continue
+				}
+				t.Logf("pebble dns-01 challenge status: type=%s url=%s status=%s", ch.Type, ch.URL, ch.Status)
 			}
 		}
 		t.Fatalf("expected order status ready or valid, got %q", order.Status)

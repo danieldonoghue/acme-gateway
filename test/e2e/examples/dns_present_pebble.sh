@@ -11,7 +11,7 @@ FQDN="${ACME_E2E_FQDN:-$1}"
 DNS_VALUE="${ACME_E2E_DNS_VALUE:-$2}"
 
 if [ -z "$FQDN" ] || [ -z "$DNS_VALUE" ]; then
-  echo "Usage: dns_present.sh <fqdn> <dnsValue>" >&2
+  echo "Usage: dns_present_pebble.sh <fqdn> <dnsValue>" >&2
   exit 1
 fi
 

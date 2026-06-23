@@ -752,17 +752,16 @@ func verifySOAConsistency(t *testing.T, domain string) {
 		// Use LookupNS to get SOA details (this is a workaround; ideally we'd query SOA directly)
 		// For now, just log NS to verify connectivity
 		nss, err := r.LookupNS(ctx, domain)
+		cancel()
 		if err != nil {
 			t.Logf("DEBUG: ns %s SOA query failed: %v", ns, err)
 			soaSerials[ns] = "ERROR"
-			cancel()
 			continue
 		}
 		if len(nss) > 0 {
 			t.Logf("DEBUG: ns %s responding (found %d NS records)", ns, len(nss))
 			soaSerials[ns] = "OK"
 		}
-		cancel()
 	}
 
 	// Check if all NS are responding

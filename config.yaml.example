@@ -53,6 +53,12 @@ upstreams:
     # The dns_hook lets the gateway publish the correct upstream-derived TXT so that
     # the upstream CA can validate it. Without this, dns-01 fails with "Correct value
     # not found" even if a TXT record exists (it's just the wrong one).
+    #
+    # LIMITATION (intentional): dns_hook is configured per-upstream, and each
+    # upstream executes one deploy/cleanup implementation. acme-gateway does not
+    # infer authoritative DNS service from SOA/NS and does not select provider
+    # per-domain. If one upstream handles domains across multiple providers,
+    # implement that routing outside the gateway in the configured hook command.
     dns_hook:
       deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
       cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"

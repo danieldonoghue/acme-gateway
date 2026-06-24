@@ -83,6 +83,8 @@ cert-manager, Vault Agent, external-secrets, and most CI/CD secret managers can 
 
 The gateway can obtain and renew its own certificate via an ACME dns-01 challenge using operator-supplied hook commands. This removes the external dependency on cert-manager but requires working DNS automation.
 
+Limitation (intentional): hook execution is per-upstream and uses one configured deploy/cleanup implementation. The gateway does not infer authoritative DNS provider from SOA/NS and does not perform per-domain provider selection internally.
+
 For containerized deployments, prefer compiled hook binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) instead of shell scripts.
 
 ```yaml

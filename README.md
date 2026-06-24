@@ -68,6 +68,10 @@ go build -o acme-gateway ./cmd/acme-gateway
 
 DNS hooks are operator-provided executables used for dns-01 TXT publication.
 
+Scope limitation (intentional): for each configured upstream, acme-gateway executes exactly one dns hook implementation (one deploy script and one cleanup script). The gateway does not auto-detect authoritative DNS service from SOA/NS data and does not perform per-domain provider selection internally.
+
+If an upstream must support domains hosted across multiple DNS providers, that provider-routing logic must be implemented externally by the configured hook command itself.
+
 Preferred implementation: use the standalone hooks repository at [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks). It provides compiled hook binaries designed for containerized deployments where shell interpreters are often unavailable.
 
 - Configure `upstreams.<name>.dns_hook` for client orders routed to dns-01 upstreams.
@@ -78,6 +82,7 @@ Why this exists: with account-bound upstream routing, upstream CAs validate TXT 
 
 Details:
 - Architecture and decision rationale: [docs/decisions/0005-gateway-managed-dns01-hooks.md](docs/decisions/0005-gateway-managed-dns01-hooks.md)
+- Product limitation decision: [docs/decisions/0006-single-dns-provider-per-upstream.md](docs/decisions/0006-single-dns-provider-per-upstream.md)
 - Preferred compiled hooks: [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks)
 - Legacy shell templates: [packaging/hooks.d/examples](packaging/hooks.d/examples)
 - E2E hook command guide: [test/e2e/examples/README.md](test/e2e/examples/README.md)

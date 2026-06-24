@@ -66,18 +66,26 @@ go build -o acme-gateway ./cmd/acme-gateway
 
 ## DNS Hooks
 
-DNS hooks are operator-provided scripts used for dns-01 TXT publication.
+DNS hooks are operator-provided executables used for dns-01 TXT publication.
+
+Scope limitation (intentional): for each configured upstream, acme-gateway executes exactly one dns hook implementation (one deploy script and one cleanup script). The gateway does not auto-detect authoritative DNS service from SOA/NS data and does not perform per-domain provider selection internally.
+
+If an upstream must support domains hosted across multiple DNS providers, that provider-routing logic must be implemented externally by the configured hook command itself.
+
+Preferred implementation: use the standalone hooks repository at [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks). It provides compiled hook binaries designed for containerized deployments where shell interpreters are often unavailable.
 
 - Configure `upstreams.<name>.dns_hook` for client orders routed to dns-01 upstreams.
 - Configure `bootstrap.dns_hook` only when `bootstrap.enabled: true`.
-- Hook scripts receive `CERTBOT_DOMAIN`, `CERTBOT_VALIDATION`, and `CERTBOT_TOKEN` (plus `ACME_GATEWAY_*` aliases).
+- Hook commands receive `CERTBOT_DOMAIN`, `CERTBOT_VALIDATION`, and `CERTBOT_TOKEN` (plus `ACME_GATEWAY_*` aliases).
 
 Why this exists: with account-bound upstream routing, upstream CAs validate TXT values derived from the gateway's upstream account key, not the client's key. The gateway must publish the upstream-derived TXT value.
 
 Details:
 - Architecture and decision rationale: [docs/decisions/0005-gateway-managed-dns01-hooks.md](docs/decisions/0005-gateway-managed-dns01-hooks.md)
-- Example hook scripts: [packaging/hooks.d/examples](packaging/hooks.d/examples)
-- Hook customization guide: [test/e2e/examples/README.md](test/e2e/examples/README.md)
+- Product limitation decision: [docs/decisions/0006-single-dns-provider-per-upstream.md](docs/decisions/0006-single-dns-provider-per-upstream.md)
+- Preferred compiled hooks: [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks)
+- Legacy shell templates: [packaging/hooks.d/examples](packaging/hooks.d/examples)
+- E2E hook command guide: [test/e2e/examples/README.md](test/e2e/examples/README.md)
 
 ## Configuration
 
@@ -141,7 +149,7 @@ Set `bootstrap.enabled: false` to provide the certificate externally (cert-manag
 
 Set `server.tls: false` to disable TLS termination at the gateway entirely. The gateway listens on plain HTTP and expects a Kubernetes Ingress controller, cloud load balancer, or service mesh to terminate HTTPS externally. `base_url` must still begin with `https://` — ACME clients connect via HTTPS through the external terminator and that URL is signed into JWS requests. `bootstrap` must also be disabled in this mode.
 
-### DNS hook scripts
+### DNS hook commands
 
 Bootstrap uses the same dns-01 hook mechanism documented in [DNS Hooks](README.md#dns-hooks). Configure `bootstrap.dns_hook` when `bootstrap.enabled: true`.
 
@@ -294,7 +302,7 @@ The workflow will:
 
 | Artifact | Description |
 |---|---|
-| `acme-gateway_vX.Y.Z_linux_amd64.tar.gz` | Binary + systemd unit + config example + DNS hook examples |
+| `acme-gateway_vX.Y.Z_linux_amd64.tar.gz` | Binary + systemd unit + config example + legacy shell DNS hook examples |
 | `acme-gateway_vX.Y.Z_linux_arm64.tar.gz` | Same for arm64 |
 | `acme-gateway_X.Y.Z_debian12_amd64.deb` | Debian 12 package |
 | `acme-gateway_X.Y.Z_debian12_arm64.deb` | Debian 12 arm64 package |
@@ -302,7 +310,9 @@ The workflow will:
 | `acme-gateway_X.Y.Z_debian13_arm64.deb` | Debian 13 arm64 package |
 | `checksums.txt` | SHA-256 checksums for all artifacts |
 
-Tarballs place example hooks under `hooks.d/examples/`; Debian packages install them under `/etc/acme-gateway/hooks.d/examples/`.
+Tarballs place legacy shell hook examples under `hooks.d/examples/`; Debian packages install them under `/etc/acme-gateway/hooks.d/examples/`.
+
+For production/container deployments, prefer compiled binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks).
 
 Docker images are pushed to `ghcr.io/danieldonoghue/acme-gateway` with tags `vX.Y.Z`, `X.Y`, and `X`.
 
@@ -330,16 +340,34 @@ make security           # govulncheck + gosec
 
 Prerequisites:
 - Docker with `docker-compose` v2
+- Built hook binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks)
+
+Build once:
+
+```bash
+cd ../acme-gateway-hooks
+make build-local
+cd ../acme-gateway
+export ACME_HOOKS_BIN_DIR="$(cd ../acme-gateway-hooks && pwd)/dist/bin-local"
+```
 
 Run:
 ```bash
-make test-e2e-dns01
+make test-e2e-dns01 ACME_HOOKS_BIN_DIR="$ACME_HOOKS_BIN_DIR"
 ```
+
+This requires:
+- `ACME_HOOKS_BIN_DIR/bind-dns-deploy`
+- `ACME_HOOKS_BIN_DIR/bind-dns-cleanup`
+- `BIND_DNS_SERVER=127.0.0.1:1053`
+- `BIND_DNS_ZONE=pebble-test.local`
+
+You can tune DNS behavior via `BIND_E2E_DNS_SERVER` and `BIND_E2E_DNS_ZONE`.
 
 This test:
 - Spins up BIND in a container (serves `pebble-test.local` zone)
 - Creates an order for `test.pebble-test.local`
-- Uses dns-01 challenge with `nsupdate` to dynamically manage TXT records
+- Uses dns-01 challenge with `bind-dns-deploy`/`bind-dns-cleanup` to dynamically manage TXT records
 - Forces Pebble to query BIND for validation (real DNS lookup, not fake)
 - Validates end-to-end flow: account → order → challenge → DNS validation → cert
 
@@ -360,11 +388,11 @@ Required environment variables:
 
 - `ACME_E2E_DOMAIN` — domain to issue (for example `staging.example.com`)
 - `ACME_E2E_EMAIL` — ACME account contact email
-- `ACME_E2E_DNS_PRESENT_CMD` — shell command that creates TXT for `_acme-challenge.<domain>`
+- `ACME_E2E_DNS_PRESENT_CMD` — hook command that creates TXT for `_acme-challenge.<domain>`
 
 Optional environment variables:
 
-- `ACME_E2E_DNS_CLEANUP_CMD` — shell command to remove TXT after validation
+- `ACME_E2E_DNS_CLEANUP_CMD` — hook command to remove TXT after validation
 - `ACME_E2E_DNS_TIMEOUT_SECONDS` — propagation timeout (default `300`)
 - `ACME_E2E_DNS_POLL_SECONDS` — DNS poll interval (default `5`)
 - `ACME_E2E_ORDER_TIMEOUT_SECONDS` — order readiness timeout (default `600`)
@@ -372,7 +400,7 @@ Optional environment variables:
 
 Hook command contract:
 
-- Command runs via `sh -c`.
+- Command runs via `sh -c` (for example a direct binary path or a shell wrapper).
 - Positional args: `$1=<fqdn>`, `$2=<txt_value>`.
 - Env vars include `ACME_E2E_PHASE`, `ACME_E2E_FQDN`, `ACME_E2E_DNS_VALUE`, `ACME_E2E_TOKEN`, `ACME_E2E_KEY_AUTHORIZATION`.
 
@@ -381,12 +409,16 @@ Example:
 ```bash
 export ACME_E2E_DOMAIN=staging.example.com
 export ACME_E2E_EMAIL=ops@example.com
-export ACME_E2E_DNS_PRESENT_CMD='bash ./test/e2e/examples/dns_present.sh "$1" "$2"'
-export ACME_E2E_DNS_CLEANUP_CMD='bash ./test/e2e/examples/dns_cleanup.sh "$1" "$2"'
+export ACME_HOOKS_BIN_DIR='<absolute-path-to-acme-gateway-hooks>/dist/bin-local'
+
+# BIND / RFC2136
+export ACME_E2E_DNS_PRESENT_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-deploy"
+export ACME_E2E_DNS_CLEANUP_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-cleanup"
+
 make test-e2e-staging
 ```
 
-See [test/e2e/examples/README.md](test/e2e/examples/README.md) for template hook scripts and DNS provider integration examples.
+Build the binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) first (for example `make build-local` in that repo for local e2e execution). For legacy shell templates and provider snippets, see [test/e2e/examples/README.md](test/e2e/examples/README.md).
 
 ## References
 

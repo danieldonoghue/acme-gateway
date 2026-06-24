@@ -76,7 +76,7 @@ config:
 
   bootstrap:
     # -- Set true to have the gateway obtain its own TLS certificate via ACME
-    # dns-01. Requires dnsHooks scripts (see below).
+    # dns-01. Requires dnsHook commands in config.bootstrap and/or config.upstreams.
     # For most Kubernetes deployments it is simpler to use cert-manager
     # (tls.certManager.enabled) or supply an existing TLS secret (tls.existingSecret).
     enabled: false
@@ -93,8 +93,10 @@ config:
     keyPath: "/etc/acme-gateway/tls/server.key"
     renewBeforeDays: 30
     dnsHook:
-      deployScript: "/etc/acme-gateway/hooks.d/deploy-dns.sh"
-      cleanupScript: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
+      # Prefer direct executable paths (for example mounted compiled binaries
+      # under /hooks) for distroless-compatible runtime behavior.
+      deployScript: "/hooks/bind-dns-deploy"
+      cleanupScript: "/hooks/bind-dns-cleanup"
 
   # -- Map of upstream ACME CAs. Keys are upstream IDs referenced in routing rules.
   upstreams:
@@ -113,16 +115,16 @@ config:
       # Scripts must be available inside the container; mount them via dnsHooks
       # (below) or a custom image. See packaging/hooks.d/examples/ for templates.
       # dnsHook:
-      #   deployScript: "/etc/acme-gateway/hooks/deploy-dns.sh"
-      #   cleanupScript: "/etc/acme-gateway/hooks/cleanup-dns.sh"
+      #   deployScript: "/hooks/bind-dns-deploy"
+      #   cleanupScript: "/hooks/bind-dns-cleanup"
     # -- Example: Let's Encrypt staging (for testing)
     # letsencrypt-staging:
     #   directoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"
     #   contactEmail: "certadmin@example.com"
     #   accountCount: 1
     #   dnsHook:
-    #     deployScript: "/etc/acme-gateway/hooks/deploy-dns.sh"
-    #     cleanupScript: "/etc/acme-gateway/hooks/cleanup-dns.sh"
+    #     deployScript: "/hooks/bind-dns-deploy"
+    #     cleanupScript: "/hooks/bind-dns-cleanup"
     #
     # -- Example: Private CA with EAB
     # private-ca:
@@ -193,16 +195,19 @@ tls:
     renewBefore: "720h"  # 30 days
 
 # ---------------------------------------------------------------------------
-# DNS hook scripts — only required when config.bootstrap.enabled: true.
-# These scripts are mounted at /etc/acme-gateway/hooks/ (mode 0755) and
-# called by the bootstrap process during dns-01 challenge validation.
+# Optional chart-managed DNS hook wrapper scripts.
+# When enabled, these scripts are mounted at /etc/acme-gateway/hooks/ (mode 0755)
+# and can be referenced from config.bootstrap.dnsHook.* and/or
+# config.upstreams.<id>.dnsHook.*.
+#
+# For distroless images, prefer direct executable hook paths (for example /hooks/*)
+# and leave this section disabled unless wrapper scripts are explicitly needed.
 # Env vars provided: CERTBOT_DOMAIN, CERTBOT_VALIDATION, CERTBOT_TOKEN.
 #
 # WARNING: the published release image (distroless/nonroot) contains no shell
-# interpreter. Shell-based hook scripts will fail at runtime. Bootstrap mode
-# with shell hooks requires a shell-capable image (e.g. the development
-# Dockerfile, which uses Alpine), or hooks compiled as standalone static
-# binaries built into a custom image.
+# interpreter. Shell-based wrappers will fail at runtime unless you use a
+# shell-capable image. Prefer compiled hooks from
+# github.com/danieldonoghue/acme-gateway-hooks.
 # ---------------------------------------------------------------------------
 dnsHooks:
   enabled: false

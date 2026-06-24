@@ -310,8 +310,8 @@ func TestStagingLE(t *testing.T) {
 		t.Logf("triggering staging dns-01 challenge: %s", dnsCh.URL)
 		client.triggerChallenge(t, dnsCh.URL)
 
-		// Gateway hook deployment is authoritative for staging. Keep the retry
-		// logs to aid DNS propagation debugging using the expected upstream TXT.
+		// In staging, gateway-managed hook deployment runs as part of challenge
+		// trigger handling, so propagation checks must happen after trigger.
 		waitForTXTRecord(t, fqdn, dnsValue)
 		t.Logf("DEBUG: TXT record confirmed on all authoritative NS; waiting 30 seconds for full replication...")
 		time.Sleep(30 * time.Second)
@@ -360,14 +360,24 @@ func TestStagingLE(t *testing.T) {
 
 func runDNSHook(t *testing.T, phase, command, fqdn, dnsValue, token, keyAuthorization string) {
 	t.Helper()
+	domain := strings.TrimPrefix(fqdn, "_acme-challenge.")
 
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Env = append(os.Environ(),
+		// Legacy e2e-specific variables used by existing shell templates.
 		"ACME_E2E_PHASE="+phase,
 		"ACME_E2E_FQDN="+fqdn,
 		"ACME_E2E_DNS_VALUE="+dnsValue,
 		"ACME_E2E_TOKEN="+token,
 		"ACME_E2E_KEY_AUTHORIZATION="+keyAuthorization,
+		// Gateway/certbot-compatible aliases for compiled hook binaries.
+		"CERTBOT_DOMAIN="+domain,
+		"CERTBOT_VALIDATION="+dnsValue,
+		"CERTBOT_TOKEN="+token,
+		"ACME_GATEWAY_FQDN="+fqdn,
+		"ACME_GATEWAY_DOMAIN="+domain,
+		"ACME_GATEWAY_DNS_VALUE="+dnsValue,
+		"ACME_GATEWAY_TOKEN="+token,
 	)
 	// Pass fqdn and dnsValue as positional args ($1, $2) to hook script
 	cmd.Args = append(cmd.Args, "--", fqdn, dnsValue)

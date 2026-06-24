@@ -6,33 +6,31 @@ This directory contains configuration for BIND (DNS server) used to support `Tes
 
 ### Prerequisites
 - Docker with `docker-compose` v2
-- `nsupdate` tool (usually pre-installed; if not: `brew install bind` on macOS or `apt-get install dnsutils` on Linux)
+- Built binaries from [acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks)
 
 ### How It Works
 
 1. **BIND Zone**: `pebble-test.local` zone is served by BIND in a container
-2. **Dynamic Updates**: DNS hooks use `nsupdate` to add/delete TXT records on the fly
+2. **Dynamic Updates**: DNS hook binaries (`bind-dns-deploy`, `bind-dns-cleanup`) perform RFC2136 updates against BIND
 3. **Pebble Validation**: When `PEBBLE_VA_ALWAYS_VALID=0`, Pebble queries BIND (via container DNS settings) to validate dns-01 challenges
 4. **Gateway**: Routes challenge requests to Pebble, which validates against BIND
 
 ### Running the Test
 
 ```bash
-# 1. Enable real DNS validation in Pebble (default is 1, which skips validation)
-export PEBBLE_VA_ALWAYS_VALID=0
+# 1. Build hook binaries in acme-gateway-hooks (once)
+# 2. Point ACME_HOOKS_BIN_DIR at the directory containing bind-dns-deploy and bind-dns-cleanup
+export ACME_HOOKS_BIN_DIR="<absolute-path-to-acme-gateway-hooks>/dist/bin-local"
 
-# 2. Enable the dns-01 test
-export ACME_E2E_PEBBLE_DNS=1
-
-# 3. Run e2e tests
-make test-e2e
+# 3. Run dns-01 e2e from this repo
+make test-e2e-dns01 ACME_HOOKS_BIN_DIR="$ACME_HOOKS_BIN_DIR"
 ```
 
 The test will:
 1. Create an ACME account with the gateway
 2. Create an order for `test.pebble-test.local`
 3. Request a dns-01 challenge
-4. Use `nsupdate` to add a TXT record to BIND
+4. Use `bind-dns-deploy` to add a TXT record to BIND
 5. Trigger challenge validation (Pebble queries BIND)
 6. Poll until challenge is valid
 7. Finalize and retrieve certificate
@@ -48,13 +46,26 @@ The test will:
   - SOA and NS records
   - Wildcard A record pointing to 127.0.0.1 (test harness)
 
-## DNS Hooks
+## DNS Hook Commands
 
-Hooks are in `../examples/`:
-- **`dns_present_pebble.sh`**: Adds TXT record via `nsupdate`
-- **`dns_cleanup_pebble.sh`**: Removes TXT record via `nsupdate`
+`make test-e2e-dns01` requires `ACME_HOOKS_BIN_DIR` to be set explicitly, and expects:
+- `ACME_HOOKS_BIN_DIR/bind-dns-deploy`
+- `ACME_HOOKS_BIN_DIR/bind-dns-cleanup`
 
-Both target BIND at `localhost:53` (from test host perspective, this is the BIND container).
+It sets:
+- `BIND_DNS_SERVER=127.0.0.1:1053`
+- `BIND_DNS_ZONE=pebble-test.local`
+
+You can override these in the make invocation:
+
+```bash
+make test-e2e-dns01 \
+  ACME_HOOKS_BIN_DIR=/path/to/acme-gateway-hooks/dist/bin-local \
+  BIND_E2E_DNS_SERVER=127.0.0.1:1053 \
+  BIND_E2E_DNS_ZONE=pebble-test.local
+```
+
+Both target BIND at `127.0.0.1:1053` (host-mapped to the BIND container).
 
 ## Customizing
 
@@ -99,11 +110,11 @@ EOF
 
 ## Troubleshooting
 
-### `nsupdate` fails: "connection refused"
+### Hook binary cannot reach BIND
 - BIND container may not be ready
 - Check `docker ps` to confirm `e2e-bind-1` container is running
-- Wait a few seconds and retry
-- List containers: `docker compose -f test/e2e/docker-compose.yml ps`
+- Confirm host mapping exists: `docker compose -f test/e2e/docker-compose.yml ps`
+- Confirm `BIND_DNS_SERVER` is reachable (default `127.0.0.1:1053`)
 
 ### Pebble validation fails: "dns-01 query failed"
 - Verify BIND zone file is correct

@@ -209,8 +209,13 @@ are lost on every Pod restart, burning CA rate limits each time.
 {{- if and .Values.config.bootstrap.enabled (not .Values.persistence.enabled) -}}
 {{- fail "acme-gateway: config.bootstrap.enabled requires persistence.enabled=true; without persistent storage the bootstrapped cert and account keys are lost on every Pod restart, burning CA rate limits." -}}
 {{- end -}}
-{{- if and .Values.config.bootstrap.enabled (not .Values.dnsHooks.enabled) -}}
-{{- fail "acme-gateway: config.bootstrap.enabled requires dnsHooks.enabled=true; the bootstrap dns-01 flow executes the hook scripts mounted from the dns-hooks ConfigMap." -}}
+{{- if .Values.config.bootstrap.enabled -}}
+  {{- if or (eq (trim .Values.config.bootstrap.dnsHook.deployScript) "") (eq (trim .Values.config.bootstrap.dnsHook.cleanupScript) "") -}}
+  {{- fail "acme-gateway: config.bootstrap.enabled requires config.bootstrap.dnsHook.deployScript and cleanupScript to be set" -}}
+  {{- end -}}
+  {{- if and (not .Values.dnsHooks.enabled) (or (hasPrefix "/etc/acme-gateway/hooks/" (trim .Values.config.bootstrap.dnsHook.deployScript)) (hasPrefix "/etc/acme-gateway/hooks/" (trim .Values.config.bootstrap.dnsHook.cleanupScript))) -}}
+  {{- fail "acme-gateway: bootstrap dns hook path points at /etc/acme-gateway/hooks/* but dnsHooks.enabled=false (scripts are not mounted). Enable dnsHooks or set bootstrap dnsHook paths to mounted executables (for example /hooks/*)." -}}
+  {{- end -}}
 {{- end -}}
 {{- end -}}
 

@@ -1,82 +1,56 @@
-# DNS Hook Examples for E2E Staging Tests
+# DNS Hook Commands for E2E Tests
 
-This directory contains example DNS hook scripts for running `make test-e2e-staging`.
+Use compiled binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks). This keeps dns-01 hooks consistent with containerized runtime behavior.
 
-## Files
+## Build hook binaries
 
-- **dns_present.sh** — Template for publishing dns-01 TXT records
-- **dns_cleanup.sh** — Template for removing dns-01 TXT records (idempotent)
+```bash
+git clone https://github.com/danieldonoghue/acme-gateway-hooks.git
+cd acme-gateway-hooks
+make build-local
+export ACME_HOOKS_BIN_DIR="$PWD/dist/bin-local"
+```
 
-## Using these examples
+## E2E dns01 (local Pebble + BIND)
 
-1. Copy and customize for your DNS provider:
+Use `make test-e2e-dns01` with `ACME_HOOKS_BIN_DIR`:
+
+```bash
+cd /path/to/acme-gateway
+make test-e2e-dns01 ACME_HOOKS_BIN_DIR="$ACME_HOOKS_BIN_DIR"
+```
+
+## E2E staging (choose provider explicitly)
+
+Set common staging vars first:
+
+```bash
+cd /path/to/acme-gateway
+export ACME_E2E_DOMAIN=staging.example.com
+export ACME_E2E_EMAIL=ops@example.com
+```
+
+Option A: BIND / RFC2136
+
+```bash
+export ACME_E2E_DNS_PRESENT_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-deploy"
+export ACME_E2E_DNS_CLEANUP_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-cleanup"
+make test-e2e-staging
+```
+
+## Legacy shell templates (optional)
+
+This directory still contains shell templates:
+- `dns_present.sh`
+- `dns_cleanup.sh`
+
+You can still use them if needed:
 
 ```bash
 cp dns_present.sh your_dns_present.sh
 cp dns_cleanup.sh your_dns_cleanup.sh
 $EDITOR your_dns_present.sh your_dns_cleanup.sh
-```
 
-2. Set environment variables and run the test:
-
-```bash
-export ACME_E2E_DOMAIN=staging.example.com
-export ACME_E2E_EMAIL=ops@example.com
-export ACME_E2E_DNS_PRESENT_CMD='bash test/e2e/examples/your_dns_present.sh'
-export ACME_E2E_DNS_CLEANUP_CMD='bash test/e2e/examples/your_dns_cleanup.sh'
-make test-e2e-staging
-```
-
-## DNS provider integrations
-
-The hook scripts receive environment variables and must perform DNS updates. Common approaches:
-
-### AWS Route53
-
-```bash
-aws route53 change-resource-record-sets \
-  --hosted-zone-id Z123456 \
-  --change-batch file:///dev/stdin <<EOF
-{
-  "Changes": [
-    {
-      "Action": "UPSERT",
-      "ResourceRecordSet": {
-        "Name": "$ACME_E2E_FQDN",
-        "Type": "TXT",
-        "TTL": 60,
-        "ResourceRecords": [{"Value": "\"$ACME_E2E_DNS_VALUE\""}]
-      }
-    }
-  ]
-}
-EOF
-```
-
-### Cloudflare
-
-```bash
-curl -X POST https://api.cloudflare.com/client/v4/zones/<zone_id>/dns_records \
-  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data "{\"type\":\"TXT\",\"name\":\"$ACME_E2E_FQDN\",\"content\":\"$ACME_E2E_DNS_VALUE\"}"
-```
-
-### nsupdate (BIND)
-
-```bash
-{
-echo "server <dns_server>"
-echo "update add $ACME_E2E_FQDN 60 TXT $ACME_E2E_DNS_VALUE"
-echo "send"
-} | nsupdate -k /etc/bind/keys/update.key
-```
-
-### Local test DNS server
-
-For local testing, run a simple test DNS server (e.g., [dnsmock](https://github.com/aio-libs/dnsmock)) and update it:
-
-```bash
-curl -X POST http://localhost:8053/update \
-  -d "name=$ACME_E2E_FQDN&value=$ACME_E2E_DNS_VALUE"
+export ACME_E2E_DNS_PRESENT_CMD='sh test/e2e/examples/your_dns_present.sh'
+export ACME_E2E_DNS_CLEANUP_CMD='sh test/e2e/examples/your_dns_cleanup.sh'
 ```

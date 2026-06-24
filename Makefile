@@ -3,6 +3,9 @@ COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE     ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 IMAGE    ?= acme-gateway
 REGISTRY ?= ghcr.io/danieldonoghue
+ACME_HOOKS_BIN_DIR ?=
+BIND_E2E_DNS_SERVER ?= 127.0.0.1:1053
+BIND_E2E_DNS_ZONE ?= pebble-test.local
 
 LDFLAGS  := -s -w \
 	-X main.version=$(VERSION) \
@@ -37,10 +40,13 @@ test: ## Run unit tests with race detector
 test-e2e: ## Run end-to-end tests against Pebble (requires Docker)
 	ACME_E2E_COMPOSE_PROFILE=always-valid go test -v -tags e2e -timeout 5m ./test/e2e/...
 
-test-e2e-dns01: ## Run Pebble dns-01 test with real DNS validation via BIND (requires Docker + nsupdate)
-	ACME_E2E_PEBBLE_DNS=1 ACME_E2E_COMPOSE_PROFILE=dns-challenge ACME_E2E_PEBBLE_DNS_PRESENT_CMD='sh $(PWD)/test/e2e/examples/dns_present_pebble.sh' ACME_E2E_PEBBLE_DNS_CLEANUP_CMD='sh $(PWD)/test/e2e/examples/dns_cleanup_pebble.sh' go test -v -tags e2e -run TestPebbleDNS01 -timeout 5m ./test/e2e/...
+test-e2e-dns01: ## Run Pebble dns-01 test with BIND hook binaries (requires Docker; set ACME_HOOKS_BIN_DIR)
+	@test -n "$(ACME_HOOKS_BIN_DIR)" || (echo "Error: ACME_HOOKS_BIN_DIR must be set to a directory containing bind-dns-deploy and bind-dns-cleanup" >&2; exit 1)
+	@test -x "$(ACME_HOOKS_BIN_DIR)/bind-dns-deploy" || (echo "Error: missing executable $(ACME_HOOKS_BIN_DIR)/bind-dns-deploy" >&2; exit 1)
+	@test -x "$(ACME_HOOKS_BIN_DIR)/bind-dns-cleanup" || (echo "Error: missing executable $(ACME_HOOKS_BIN_DIR)/bind-dns-cleanup" >&2; exit 1)
+	ACME_E2E_PEBBLE_DNS=1 ACME_E2E_COMPOSE_PROFILE=dns-challenge ACME_E2E_PEBBLE_DNS_PRESENT_CMD='BIND_DNS_SERVER=$(BIND_E2E_DNS_SERVER) BIND_DNS_ZONE=$(BIND_E2E_DNS_ZONE) $(ACME_HOOKS_BIN_DIR)/bind-dns-deploy' ACME_E2E_PEBBLE_DNS_CLEANUP_CMD='BIND_DNS_SERVER=$(BIND_E2E_DNS_SERVER) BIND_DNS_ZONE=$(BIND_E2E_DNS_ZONE) $(ACME_HOOKS_BIN_DIR)/bind-dns-cleanup' go test -v -tags e2e -run TestPebbleDNS01 -timeout 5m ./test/e2e/...
 
-test-e2e-staging: ## Run LE staging E2E via dns-01 hooks (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; optional ACME_E2E_DNS_CLEANUP_CMD)
+test-e2e-staging: ## Run LE staging E2E via dns-01 hook commands (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; optional ACME_E2E_DNS_CLEANUP_CMD)
 	ACME_E2E_STAGING=1 ACME_E2E_COMPOSE_PROFILE=always-valid go test -v -tags e2e -run TestStagingLE -timeout 10m ./test/e2e/...
 
 vet: ## Run go vet

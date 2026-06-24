@@ -19,7 +19,8 @@
 //   - Set ACME_E2E_EMAIL to a contact email
 //   - The domain's HTTP-01 challenge must be serveable: either run the test on
 //     a host reachable from the internet on port 80, or configure DNS delegation
-//     and set ACME_E2E_CHALLENGE=dns-01 with appropriate hook scripts.
+//     and set ACME_E2E_CHALLENGE=dns-01 with appropriate hook commands
+//     (compiled binaries from acme-gateway-hooks are preferred).
 package e2e_test
 
 import (
@@ -338,14 +339,14 @@ func writeDNSHookWrapper(t *testing.T, command, phase string) string {
 		"#!/bin/sh",
 		"set -e",
 		"",
-		"# Bridge gateway hook env vars to legacy ACME_E2E_* script inputs.",
+		"# Bridge gateway hook env vars to ACME_E2E_* command inputs.",
 		"export ACME_E2E_PHASE=\"" + phase + "\"",
 		"export ACME_E2E_FQDN=\"${ACME_GATEWAY_FQDN:-${CERTBOT_DOMAIN:-}}\"",
 		"export ACME_E2E_DNS_VALUE=\"${ACME_GATEWAY_DNS_VALUE:-${CERTBOT_VALIDATION:-}}\"",
 		"export ACME_E2E_TOKEN=\"${ACME_GATEWAY_TOKEN:-${CERTBOT_TOKEN:-}}\"",
 		"",
 		"# Forward positional args from gateway. Drop the optional leading \"--\"",
-		"# sentinel so legacy scripts still receive fqdn as $1 and value as $2.",
+		"# sentinel so command wrappers still receive fqdn as $1 and value as $2.",
 		"if [ \"${1:-}\" = \"--\" ]; then",
 		"  shift",
 		"fi",

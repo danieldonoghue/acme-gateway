@@ -26,6 +26,9 @@ services:
       dockerfile: Dockerfile
     profiles:
       - dns-challenge
+    ports:
+      - "1053:53/udp"
+      - "1053:53/tcp"
     networks:
       pebble-test:
         ipv4_address: 172.25.0.10

@@ -54,11 +54,13 @@ helm install acme-gateway ./deploy/helm/acme-gateway \
 
 Exactly one of the following must be configured. See the [deploy README](../README.md#tls-certificates) for background on each option.
 
+For `dnsHooks`, prefer compiled binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) rather than shell scripts, especially with the distroless release image.
+
 | Option | When to use |
 |--------|-------------|
 | `tls.certManager.enabled: true` | cert-manager is installed; easiest automated renewal |
 | `tls.existingSecret: <name>` | You manage certs externally (Vault, manual, CI/CD) |
-| `config.bootstrap.enabled: true` + `dnsHooks` | No cert-manager; you have DNS automation scripts |
+| `config.bootstrap.enabled: true` + `dnsHooks` | No cert-manager; you have DNS automation commands (prefer compiled binaries) |
 
 ## Upgrading
 
@@ -121,9 +123,9 @@ helm uninstall acme-gateway --namespace acme-gateway
 | `tls.certManager.duration` | `2160h` | Certificate validity duration (90 days) |
 | `tls.certManager.renewBefore` | `720h` | Renew this long before expiry (30 days) |
 | **DNS Hooks** | | |
-| `dnsHooks.enabled` | `false` | Mount DNS hook scripts (required when `bootstrap.enabled: true`) |
-| `dnsHooks.deployScript` | _(stub)_ | Shell script to create dns-01 TXT record |
-| `dnsHooks.cleanupScript` | _(stub)_ | Shell script to remove dns-01 TXT record |
+| `dnsHooks.enabled` | `false` | Mount DNS hook commands (required when `bootstrap.enabled: true`) |
+| `dnsHooks.deployScript` | _(stub)_ | Command content for dns-01 TXT creation hook |
+| `dnsHooks.cleanupScript` | _(stub)_ | Command content for dns-01 TXT cleanup hook |
 | **Extras** | | |
 | `extraEnv` | `[]` | Additional env vars (use for EAB secrets referenced as `${VAR}` in config) |
 | `extraEnvFrom` | `[]` | Inject all keys from a Secret/ConfigMap as env vars |

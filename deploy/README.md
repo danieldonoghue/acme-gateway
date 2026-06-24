@@ -18,7 +18,7 @@ Choose **Kustomize** if you prefer to keep plain YAML in source control and comp
 
 - Kubernetes ≥ 1.25
 - A container image of `acme-gateway` published to a registry you can pull from
-- A TLS certificate for the gateway's public hostname — **or** DNS hook scripts if using bootstrap mode, which self-provisions the certificate via dns-01 (see [TLS certificates](#tls-certificates) below)
+- A TLS certificate for the gateway's public hostname — **or** DNS hook commands if using bootstrap mode, which self-provisions the certificate via dns-01 (see [TLS certificates](#tls-certificates) below)
 - Persistent storage available (default `StorageClass` or named class) for the SQLite state database
 
 ---
@@ -81,7 +81,9 @@ cert-manager, Vault Agent, external-secrets, and most CI/CD secret managers can 
 
 ### 3. Bootstrap mode (dns-01 self-provisioning)
 
-The gateway can obtain and renew its own certificate via an ACME dns-01 challenge using operator-supplied hook scripts. This removes the external dependency on cert-manager but requires working DNS automation.
+The gateway can obtain and renew its own certificate via an ACME dns-01 challenge using operator-supplied hook commands. This removes the external dependency on cert-manager but requires working DNS automation.
+
+For containerized deployments, prefer compiled hook binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) instead of shell scripts.
 
 ```yaml
 # values.yaml (Helm)
@@ -91,18 +93,12 @@ config:
     domain: "acme-gateway.example.com"
     contactEmail: "ops@example.com"
     upstream: letsencrypt
-
-dnsHooks:
-  enabled: true
-  deployScript: |
-    #!/bin/sh
-    # set TXT record _acme-challenge.${CERTBOT_DOMAIN} = ${CERTBOT_VALIDATION}
-    ...
-  cleanupScript: |
-    #!/bin/sh
-    # remove TXT record _acme-challenge.${CERTBOT_DOMAIN}
-    ...
+    dnsHook:
+      deployScript: "/hooks/excedo-dns-deploy"
+      cleanupScript: "/hooks/excedo-dns-cleanup"
 ```
+
+Mount those binaries (for example via initContainer + `emptyDir`) so they are executable in the gateway container.
 
 In bootstrap mode the gateway writes the obtained certificate to the PVC so it survives restarts.
 

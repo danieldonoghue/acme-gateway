@@ -193,16 +193,15 @@ tls:
     renewBefore: "720h"  # 30 days
 
 # ---------------------------------------------------------------------------
-# DNS hook scripts — only required when config.bootstrap.enabled: true.
-# These scripts are mounted at /etc/acme-gateway/hooks/ (mode 0755) and
+# DNS hook commands — only required when config.bootstrap.enabled: true.
+# These commands are mounted at /etc/acme-gateway/hooks/ (mode 0755) and
 # called by the bootstrap process during dns-01 challenge validation.
 # Env vars provided: CERTBOT_DOMAIN, CERTBOT_VALIDATION, CERTBOT_TOKEN.
 #
 # WARNING: the published release image (distroless/nonroot) contains no shell
-# interpreter. Shell-based hook scripts will fail at runtime. Bootstrap mode
-# with shell hooks requires a shell-capable image (e.g. the development
-# Dockerfile, which uses Alpine), or hooks compiled as standalone static
-# binaries built into a custom image.
+# interpreter. Shell-based hooks will fail at runtime. Prefer compiled hooks
+# from github.com/danieldonoghue/acme-gateway-hooks, mounted via an init
+# container or built into a custom image.
 # ---------------------------------------------------------------------------
 dnsHooks:
   enabled: false

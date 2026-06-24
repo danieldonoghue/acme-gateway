@@ -409,16 +409,11 @@ Example:
 ```bash
 export ACME_E2E_DOMAIN=staging.example.com
 export ACME_E2E_EMAIL=ops@example.com
-export ACME_HOOKS_DIR='/path/to/acme-gateway-hooks'
+export ACME_HOOKS_BIN_DIR='<absolute-path-to-acme-gateway-hooks>/dist/bin-local'
 
-# Option A: Excedo
-export EXCEDO_API_TOKEN='...'
-export ACME_E2E_DNS_PRESENT_CMD="$ACME_HOOKS_DIR/dist/bin/excedo-dns-deploy"
-export ACME_E2E_DNS_CLEANUP_CMD="$ACME_HOOKS_DIR/dist/bin/excedo-dns-cleanup"
-
-# Option B: BIND / RFC2136
-# export ACME_E2E_DNS_PRESENT_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_DIR/dist/bin/bind-dns-deploy"
-# export ACME_E2E_DNS_CLEANUP_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_DIR/dist/bin/bind-dns-cleanup"
+# BIND / RFC2136
+export ACME_E2E_DNS_PRESENT_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-deploy"
+export ACME_E2E_DNS_CLEANUP_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-cleanup"
 
 make test-e2e-staging
 ```

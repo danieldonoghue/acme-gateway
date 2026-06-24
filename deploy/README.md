@@ -96,11 +96,14 @@ config:
     contactEmail: "ops@example.com"
     upstream: letsencrypt
     dnsHook:
-      deployScript: "/hooks/excedo-dns-deploy"
-      cleanupScript: "/hooks/excedo-dns-cleanup"
+      # Preferred: direct executable hook binaries (distroless-safe).
+      deployScript: "/hooks/bind-dns-deploy"
+      cleanupScript: "/hooks/bind-dns-cleanup"
 ```
 
-Mount those binaries (for example via initContainer + `emptyDir`) so they are executable in the gateway container.
+    Mount `/hooks/bind-dns-deploy` and `/hooks/bind-dns-cleanup` (for example via initContainer + `emptyDir`) so they are executable in the gateway container.
+
+Optional wrapper mode: set `dnsHooks.enabled=true` to mount chart-managed scripts at `/etc/acme-gateway/hooks/*` and point `config.bootstrap.dnsHook.*` there. This mode can run shell scripts only when using a shell-capable image.
 
 In bootstrap mode the gateway writes the obtained certificate to the PVC so it survives restarts.
 

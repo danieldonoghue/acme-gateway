@@ -13,13 +13,11 @@ export ACME_HOOKS_BIN_DIR="$PWD/dist/bin-local"
 
 ## E2E dns01 (local Pebble + BIND)
 
-Use BIND hook binaries explicitly:
+Use `make test-e2e-dns01` with `ACME_HOOKS_BIN_DIR`:
 
 ```bash
 cd /path/to/acme-gateway
-export ACME_E2E_PEBBLE_DNS_PRESENT_CMD="BIND_DNS_SERVER=127.0.0.1:1053 BIND_DNS_ZONE=pebble-test.local $ACME_HOOKS_BIN_DIR/bind-dns-deploy"
-export ACME_E2E_PEBBLE_DNS_CLEANUP_CMD="BIND_DNS_SERVER=127.0.0.1:1053 BIND_DNS_ZONE=pebble-test.local $ACME_HOOKS_BIN_DIR/bind-dns-cleanup"
-make test-e2e-dns01
+make test-e2e-dns01 ACME_HOOKS_BIN_DIR="$ACME_HOOKS_BIN_DIR"
 ```
 
 ## E2E staging (choose provider explicitly)
@@ -37,15 +35,6 @@ Option A: BIND / RFC2136
 ```bash
 export ACME_E2E_DNS_PRESENT_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-deploy"
 export ACME_E2E_DNS_CLEANUP_CMD="BIND_DNS_SERVER=ns1.example.net:53 BIND_DNS_ZONE=example.com $ACME_HOOKS_BIN_DIR/bind-dns-cleanup"
-make test-e2e-staging
-```
-
-Option B: Excedo
-
-```bash
-export EXCEDO_API_TOKEN='...'
-export ACME_E2E_DNS_PRESENT_CMD="$ACME_HOOKS_BIN_DIR/excedo-dns-deploy"
-export ACME_E2E_DNS_CLEANUP_CMD="$ACME_HOOKS_BIN_DIR/excedo-dns-cleanup"
 make test-e2e-staging
 ```
 

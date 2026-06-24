@@ -50,17 +50,35 @@ helm install acme-gateway ./deploy/helm/acme-gateway \
   --values my-values.yaml
 ```
 
+### Upstream dns-01 hooks (direct binaries)
+
+Use upstream-level dns hooks when clients will solve dns-01 challenges through a given upstream CA.
+
+```yaml
+config:
+  upstreams:
+    letsencrypt:
+      directoryURL: "https://acme-v02.api.letsencrypt.org/directory"
+      contactEmail: "ops@example.com"
+      dnsHook:
+        deployScript: "/hooks/bind-dns-deploy"
+        cleanupScript: "/hooks/bind-dns-cleanup"
+```
+
+For distroless images, prefer direct executable paths like `/hooks/*`. If you must use chart-managed wrapper scripts, enable `dnsHooks.enabled` and reference `/etc/acme-gateway/hooks/*` paths instead.
+
 ## TLS options
 
 Exactly one of the following must be configured. See the [deploy README](../README.md#tls-certificates) for background on each option.
 
-For `dnsHooks`, prefer compiled binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) rather than shell scripts, especially with the distroless release image.
+For `config.bootstrap.dnsHook.*` and `config.upstreams.<id>.dnsHook.*`, prefer compiled binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) rather than shell scripts, especially with the distroless release image.
 
 | Option | When to use |
 |--------|-------------|
 | `tls.certManager.enabled: true` | cert-manager is installed; easiest automated renewal |
 | `tls.existingSecret: <name>` | You manage certs externally (Vault, manual, CI/CD) |
-| `config.bootstrap.enabled: true` + `dnsHooks` | No cert-manager; you have DNS automation commands (prefer compiled binaries) |
+| `config.bootstrap.enabled: true` + direct `config.bootstrap.dnsHook.*` paths | No cert-manager; preferred for distroless with mounted compiled binaries |
+| `config.bootstrap.enabled: true` + `dnsHooks.enabled: true` | Optional chart-managed wrapper scripts at `/etc/acme-gateway/hooks/*` |
 
 ## Upgrading
 
@@ -110,6 +128,8 @@ helm uninstall acme-gateway --namespace acme-gateway
 | `config.upstreams.<id>.caCertPath` | `""` | Path to PEM file for private CA TLS trust (mount via `extraVolumes`) |
 | `config.upstreams.<id>.eab.keyID` | `""` | EAB key ID; use `${ENV_VAR}` to reference a Secret via `extraEnv` |
 | `config.upstreams.<id>.eab.hmacKey` | `""` | EAB HMAC key |
+| `config.upstreams.<id>.dnsHook.deployScript` | `""` | Optional dns-01 deploy command for this upstream (prefer direct binaries, e.g. `/hooks/bind-dns-deploy`) |
+| `config.upstreams.<id>.dnsHook.cleanupScript` | `""` | Optional dns-01 cleanup command for this upstream (prefer direct binaries, e.g. `/hooks/bind-dns-cleanup`) |
 | **Profiles** | | |
 | `config.profiles` | `{tlsserver: "..."}` | Map of profile name → description exposed to ACME clients |
 | **Routing** | | |
@@ -123,7 +143,7 @@ helm uninstall acme-gateway --namespace acme-gateway
 | `tls.certManager.duration` | `2160h` | Certificate validity duration (90 days) |
 | `tls.certManager.renewBefore` | `720h` | Renew this long before expiry (30 days) |
 | **DNS Hooks** | | |
-| `dnsHooks.enabled` | `false` | Mount DNS hook commands (required when `bootstrap.enabled: true`) |
+| `dnsHooks.enabled` | `false` | Mount optional chart-managed wrapper scripts at `/etc/acme-gateway/hooks/*` |
 | `dnsHooks.deployScript` | _(stub)_ | Command content for dns-01 TXT creation hook |
 | `dnsHooks.cleanupScript` | _(stub)_ | Command content for dns-01 TXT cleanup hook |
 | **Extras** | | |

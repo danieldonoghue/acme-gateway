@@ -18,13 +18,12 @@ This directory contains configuration for BIND (DNS server) used to support `Tes
 ### Running the Test
 
 ```bash
-# 1. Build hook binaries (once)
-cd ../acme-gateway-hooks
-make build-local
+# 1. Build hook binaries in acme-gateway-hooks (once)
+# 2. Point ACME_HOOKS_BIN_DIR at the directory containing bind-dns-deploy and bind-dns-cleanup
+export ACME_HOOKS_BIN_DIR="<absolute-path-to-acme-gateway-hooks>/dist/bin-local"
 
-# 2. Run dns-01 e2e from this repo
-cd ../acme-gateway
-make test-e2e-dns01
+# 3. Run dns-01 e2e from this repo
+make test-e2e-dns01 ACME_HOOKS_BIN_DIR="$ACME_HOOKS_BIN_DIR"
 ```
 
 The test will:

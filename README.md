@@ -77,11 +77,25 @@ Preferred implementation: use the standalone hooks repository at [danieldonoghue
 - Configure `upstreams.<name>.dns_hook` for client orders routed to dns-01 upstreams.
 - Configure `bootstrap.dns_hook` only when `bootstrap.enabled: true`.
 - Hook commands receive `CERTBOT_DOMAIN`, `CERTBOT_VALIDATION`, and `CERTBOT_TOKEN` (plus `ACME_GATEWAY_*` aliases).
+- Hook commands also receive source/effective dns-01 target vars for delegation-aware flows:
+  - `CERTBOT_DOMAIN_SOURCE`, `CERTBOT_DOMAIN_EFFECTIVE`
+  - `CERTBOT_FQDN_SOURCE`, `CERTBOT_FQDN_EFFECTIVE`
+  - `ACME_GATEWAY_DOMAIN_SOURCE`, `ACME_GATEWAY_DOMAIN_EFFECTIVE`
+  - `ACME_GATEWAY_FQDN_SOURCE`, `ACME_GATEWAY_FQDN_EFFECTIVE`
+
+dns-01 hardening options (per hook):
+- `propagation`: authoritative nameserver quorum check before triggering upstream challenge.
+  - Defaults: enabled, `timeout_seconds=300`, `poll_seconds=2`, `min_consecutive_successes=3`, `quorum_percent=100`.
+- `delegation`: optional CNAME delegation support for `_acme-challenge.<domain>`.
+  - When enabled and a CNAME exists, publish/check/cleanup use the delegated effective FQDN.
+  - `allowed_zone_suffixes` is optional. If unset or empty, any delegated zone is accepted.
+  - `mode`: `strict` fails the challenge on delegation resolution/policy errors; `permissive` falls back to source FQDN.
 
 Why this exists: with account-bound upstream routing, upstream CAs validate TXT values derived from the gateway's upstream account key, not the client's key. The gateway must publish the upstream-derived TXT value.
 
 Details:
 - Architecture and decision rationale: [docs/decisions/0005-gateway-managed-dns01-hooks.md](docs/decisions/0005-gateway-managed-dns01-hooks.md)
+- Propagation/delegation hardening: [docs/decisions/0007-authoritative-propagation-and-dns01-delegation.md](docs/decisions/0007-authoritative-propagation-and-dns01-delegation.md)
 - Product limitation decision: [docs/decisions/0006-single-dns-provider-per-upstream.md](docs/decisions/0006-single-dns-provider-per-upstream.md)
 - Preferred compiled hooks: [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks)
 - Legacy shell templates: [packaging/hooks.d/examples](packaging/hooks.d/examples)
@@ -330,6 +344,7 @@ make test               # run unit tests with race detector
 make test-e2e           # end-to-end tests against Pebble (requires Docker)
 make test-e2e-dns01     # Pebble dns-01 with real DNS validation via local BIND
 make test-e2e-staging   # staging Let's Encrypt E2E (dns-01 via hooks)
+make test-e2e-staging-lego # staging E2E using lego as external client via acme-gateway
 make lint               # golangci-lint
 make security           # govulncheck + gosec
 ```

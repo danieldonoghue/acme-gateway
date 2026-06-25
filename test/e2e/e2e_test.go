@@ -5,12 +5,18 @@ package e2e_test
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -19,8 +25,93 @@ import (
 	"time"
 
 	"github.com/danieldonoghue/acme-gateway/internal/config"
+	legocrypto "github.com/go-acme/lego/v4/certcrypto"
+	legocert "github.com/go-acme/lego/v4/certificate"
+	legocore "github.com/go-acme/lego/v4/challenge"
+	legodns01 "github.com/go-acme/lego/v4/challenge/dns01"
+	legoapi "github.com/go-acme/lego/v4/lego"
+	legoreg "github.com/go-acme/lego/v4/registration"
 	"github.com/go-jose/go-jose/v4"
 )
+
+func testLogf(t *testing.T, component, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	t.Logf("ts=%s component=%s %s", time.Now().UTC().Format(time.RFC3339Nano), component, msg)
+}
+
+type legoE2EUser struct {
+	Email        string
+	PrivateKey   *ecdsa.PrivateKey
+	Registration *legoreg.Resource
+}
+
+func (u *legoE2EUser) GetEmail() string {
+	return u.Email
+}
+
+func (u *legoE2EUser) GetRegistration() *legoreg.Resource {
+	return u.Registration
+}
+
+func (u *legoE2EUser) GetPrivateKey() crypto.PrivateKey {
+	return u.PrivateKey
+}
+
+type noopDNSProvider struct{}
+
+type commandDNSProvider struct {
+	presentCmd string
+	cleanupCmd string
+}
+
+func (p *commandDNSProvider) Present(domain, token, keyAuth string) error {
+	info := legodns01.GetChallengeInfo(domain, keyAuth)
+	fqdn := strings.TrimSuffix(info.EffectiveFQDN, ".")
+	testLogfFromLogger("lego", "present fqdn=%s cmd=%s", fqdn, p.presentCmd)
+	if err := runDNSHookCommand("present", p.presentCmd, fqdn, info.Value, token, keyAuth); err != nil {
+		return err
+	}
+	timeout := envDurationSeconds("ACME_E2E_DNS_TIMEOUT_SECONDS", 300)
+	interval := envDurationSeconds("ACME_E2E_DNS_POLL_SECONDS", 5)
+	testLogfFromLogger("lego", "waiting for authoritative TXT visibility fqdn=%s timeout=%s interval=%s", fqdn, timeout, interval)
+	if err := waitForAuthoritativeTXT(fqdn, info.Value, timeout, interval); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *commandDNSProvider) CleanUp(domain, token, keyAuth string) error {
+	if strings.TrimSpace(p.cleanupCmd) == "" {
+		testLogfFromLogger("lego", "cleanup skipped (ACME_E2E_DNS_CLEANUP_CMD unset)")
+		return nil
+	}
+	info := legodns01.GetChallengeInfo(domain, keyAuth)
+	fqdn := strings.TrimSuffix(info.EffectiveFQDN, ".")
+	testLogfFromLogger("lego", "cleanup fqdn=%s cmd=%s", fqdn, p.cleanupCmd)
+	return runDNSHookCommand("cleanup", p.cleanupCmd, fqdn, info.Value, token, keyAuth)
+}
+
+func (p *commandDNSProvider) Timeout() (timeout, interval time.Duration) {
+	return 5 * time.Minute, 5 * time.Second
+}
+
+var _ legocore.ProviderTimeout = (*commandDNSProvider)(nil)
+
+func testLogfFromLogger(component, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	log.Printf("ts=%s component=%s %s", time.Now().UTC().Format(time.RFC3339Nano), component, msg)
+}
+
+func (p *noopDNSProvider) Present(domain, token, keyAuth string) error {
+	return nil
+}
+
+func (p *noopDNSProvider) CleanUp(domain, token, keyAuth string) error {
+	return nil
+}
+
+var _ legocore.Provider = (*noopDNSProvider)(nil)
 
 // TestPebbleFullFlow exercises the complete RFC 8555 certificate issuance flow
 // through the gateway backed by Pebble. Because PEBBLE_VA_ALWAYS_VALID=1 is
@@ -44,12 +135,12 @@ func TestPebbleFullFlow(t *testing.T) {
 	if accountURL == "" {
 		t.Fatal("register returned empty account URL")
 	}
-	t.Logf("account: %s", accountURL)
+	testLogf(t, "test", "account: %s", accountURL)
 
 	// 2. Create order.
 	const domain = "gateway-test.example.invalid"
 	order, orderURL := client.newOrder(t, domain)
-	t.Logf("order: %s (status=%s)", orderURL, order.Status)
+	testLogf(t, "test", "order: %s (status=%s)", orderURL, order.Status)
 	if len(order.Authorizations) == 0 {
 		t.Fatal("order has no authorizations")
 	}
@@ -57,7 +148,7 @@ func TestPebbleFullFlow(t *testing.T) {
 	// 3. Fetch authz and trigger first challenge.
 	for _, authzURL := range order.Authorizations {
 		authz := client.getAuthz(t, authzURL)
-		t.Logf("authz %s: status=%s", authzURL, authz.Status)
+		testLogf(t, "test", "authz %s: status=%s", authzURL, authz.Status)
 
 		if authz.Status == "valid" {
 			// Already satisfied (e.g. re-used authz) – nothing to do.
@@ -69,25 +160,25 @@ func TestPebbleFullFlow(t *testing.T) {
 			t.Fatalf("authz has no challenges for %s", authzURL)
 		}
 		chall := authz.Challenges[0]
-		t.Logf("triggering challenge type=%s url=%s", chall.Type, chall.URL)
+		testLogf(t, "test", "triggering challenge type=%s url=%s", chall.Type, chall.URL)
 		client.triggerChallenge(t, chall.URL)
 	}
 
 	// 4. Poll until ready.
 	order = client.pollOrder(t, orderURL)
-	t.Logf("order after challenge: status=%s", order.Status)
+	testLogf(t, "test", "order after challenge: status=%s", order.Status)
 	if order.Status != "ready" && order.Status != "valid" {
 		t.Fatalf("expected order status ready or valid, got %q", order.Status)
 	}
 
 	// 5–6. Finalize and wait for certificate.
 	certURL := client.finalize(t, order.Finalize, orderURL, domain)
-	t.Logf("certificate URL: %s", certURL)
+	testLogf(t, "test", "certificate URL: %s", certURL)
 
 	// 7. Fetch and verify certificate.
 	certPEM := client.fetchCert(t, certURL)
 	certs := parseCerts(t, certPEM)
-	t.Logf("received %d certificate(s); leaf CN=%q", len(certs), certs[0].Subject.CommonName)
+	testLogf(t, "test", "received %d certificate(s); leaf CN=%q", len(certs), certs[0].Subject.CommonName)
 	assertCertSANs(t, certs, domain)
 }
 
@@ -122,12 +213,12 @@ func TestChallengeResponseLinkHeaders(t *testing.T) {
 	}
 
 	chall := authz.Challenges[0]
-	t.Logf("triggering challenge %s (rel=up required per RFC 8555 §7.1)", chall.URL)
+	testLogf(t, "test", "triggering challenge %s (rel=up required per RFC 8555 §7.1)", chall.URL)
 
 	// This call will fail if response does not include rel="up" Link header.
 	client.triggerChallenge(t, chall.URL)
 
-	t.Logf("challenge response correctly includes rel=\"index\" and rel=\"up\" Link headers")
+	testLogf(t, "test", "challenge response correctly includes rel=\"index\" and rel=\"up\" Link headers")
 }
 
 // TestRoutingUsesAccountKeyTypeNotCSR verifies the current routing behaviour:
@@ -244,7 +335,7 @@ func TestPebbleNewNonce(t *testing.T) {
 	if nonce == "" {
 		t.Fatal("freshNonce returned empty string")
 	}
-	t.Logf("nonce: %s", nonce)
+	testLogf(t, "test", "nonce: %s", nonce)
 }
 
 // TestStagingLE exercises full issuance against Let's Encrypt staging via
@@ -266,11 +357,11 @@ func TestStagingLE(t *testing.T) {
 	client := newACMEClient(t, h.GatewayURL, h.TrustPool)
 
 	accountURL := client.registerWithEmail(t, email)
-	t.Logf("staging account: %s", accountURL)
+	testLogf(t, "test", "staging account: %s", accountURL)
 	accountID := strings.TrimPrefix(accountURL, h.GatewayURL+"/account/")
 
 	order, orderURL := client.newOrder(t, domain)
-	t.Logf("staging order: %s (status=%s)", orderURL, order.Status)
+	testLogf(t, "test", "staging order: %s (status=%s)", orderURL, order.Status)
 	ua, err := h.st.GetUpstreamAccountForAccount(context.Background(), "le-staging", accountID)
 	if err != nil {
 		t.Fatalf("loading bound upstream account for %s: %v", accountID, err)
@@ -284,7 +375,7 @@ func TestStagingLE(t *testing.T) {
 
 	for _, authzURL := range order.Authorizations {
 		authz := client.getAuthz(t, authzURL)
-		t.Logf("staging authz %s: status=%s", authzURL, authz.Status)
+		testLogf(t, "test", "staging authz %s: status=%s", authzURL, authz.Status)
 
 		if authz.Status == "valid" {
 			continue
@@ -307,36 +398,41 @@ func TestStagingLE(t *testing.T) {
 		fqdn := "_acme-challenge." + strings.TrimSuffix(domain, ".")
 		_ = keyAuth // kept for parity with debug workflows where key auth is inspected
 
-		t.Logf("triggering staging dns-01 challenge: %s", dnsCh.URL)
+		testLogf(t, "test", "triggering staging dns-01 challenge: %s", dnsCh.URL)
 		client.triggerChallenge(t, dnsCh.URL)
 
 		// In staging, gateway-managed hook deployment runs as part of challenge
 		// trigger handling, so propagation checks must happen after trigger.
-		waitForTXTRecord(t, fqdn, dnsValue)
-		t.Logf("DEBUG: TXT record confirmed on all authoritative NS; waiting 30 seconds for full replication...")
-		time.Sleep(30 * time.Second)
-		t.Logf("DEBUG: verifying SOA serial consistency across authoritative NS...")
-		verifySOAConsistency(t, domain)
+		// Cleanup runs asynchronously and will complete in the background.
+		found := waitForTXTRecord(t, fqdn, dnsValue)
+		if found {
+			testLogf(t, "test", "TXT record confirmed on all authoritative NS; waiting 30 seconds for full replication...")
+			time.Sleep(30 * time.Second)
+			testLogf(t, "test", "verifying SOA serial consistency across authoritative NS...")
+			verifySOAConsistency(t, domain)
+		} else {
+			testLogf(t, "test", "DNS check timed out or failed (proceeding anyway)")
+		}
 	}
 
 	order = client.pollOrderWithTimeout(t, orderURL, envDurationSeconds("ACME_E2E_ORDER_TIMEOUT_SECONDS", 600))
 	if order.Status != "ready" && order.Status != "valid" {
 		if order.Error != nil {
-			t.Logf("staging order problem: type=%s detail=%s", order.Error.Type, order.Error.Detail)
+			testLogf(t, "test", "staging order problem: type=%s detail=%s", order.Error.Type, order.Error.Detail)
 		}
 		for _, authzURL := range order.Authorizations {
 			a := client.getAuthz(t, authzURL)
-			t.Logf("staging authz detail %s: status=%s identifier=%s", authzURL, a.Status, a.Identifier.Value)
+			testLogf(t, "test", "staging authz detail %s: status=%s identifier=%s", authzURL, a.Status, a.Identifier.Value)
 			if a.Error != nil {
-				t.Logf("staging authz problem: type=%s detail=%s", a.Error.Type, a.Error.Detail)
+				testLogf(t, "test", "staging authz problem: type=%s detail=%s", a.Error.Type, a.Error.Detail)
 			}
 			for _, ch := range a.Challenges {
 				if ch.Type != "dns-01" {
 					continue
 				}
-				t.Logf("staging dns-01 challenge detail: url=%s status=%s validated=%s", ch.URL, ch.Status, ch.Validated)
+				testLogf(t, "test", "staging dns-01 challenge detail: url=%s status=%s validated=%s", ch.URL, ch.Status, ch.Validated)
 				if ch.Error != nil {
-					t.Logf("staging dns-01 challenge problem: type=%s detail=%s", ch.Error.Type, ch.Error.Detail)
+					testLogf(t, "test", "staging dns-01 challenge problem: type=%s detail=%s", ch.Error.Type, ch.Error.Detail)
 				}
 			}
 		}
@@ -351,26 +447,94 @@ func TestStagingLE(t *testing.T) {
 		csrKeyECDSA,
 		envDurationSeconds("ACME_E2E_FINALIZE_TIMEOUT_SECONDS", 600),
 	)
-	t.Logf("staging certificate URL: %s", certURL)
+	testLogf(t, "test", "staging certificate URL: %s", certURL)
 
 	certs := parseCerts(t, client.fetchCert(t, certURL))
 	assertCertSANs(t, certs, domain)
-	t.Logf("staging issued %d certificate(s)", len(certs))
+	testLogf(t, "test", "staging issued %d certificate(s)", len(certs))
+}
+
+// TestStagingLELegoViaGateway validates that an external ACME client (lego)
+// can obtain a certificate through acme-gateway (which then routes upstream to
+// Let's Encrypt staging).
+func TestStagingLELegoViaGateway(t *testing.T) {
+	if os.Getenv("ACME_E2E_STAGING") == "" {
+		t.Skip("set ACME_E2E_STAGING=1 to run (requires internet access + real DNS)")
+	}
+
+	domain := os.Getenv("ACME_E2E_DOMAIN")
+	if domain == "" {
+		t.Fatal("ACME_E2E_DOMAIN must be set when running staging tests")
+	}
+	email := os.Getenv("ACME_E2E_EMAIL")
+	if email == "" {
+		t.Fatal("ACME_E2E_EMAIL must be set when running staging tests")
+	}
+
+	h := newStagingHarness(t)
+
+	presentCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_PRESENT_CMD"))
+	if presentCmd == "" {
+		t.Fatal("ACME_E2E_DNS_PRESENT_CMD must be set when running staging lego test")
+	}
+	cleanupCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_CLEANUP_CMD"))
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("lego key generation failed: %v", err)
+	}
+
+	legoUser := &legoE2EUser{Email: email, PrivateKey: privKey}
+	legoConfig := legoapi.NewConfig(legoUser)
+	legoConfig.CADirURL = h.GatewayURL + "/directory"
+	legoConfig.Certificate.KeyType = legocrypto.EC256
+	legoConfig.HTTPClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec
+
+	legoClient, err := legoapi.NewClient(legoConfig)
+	if err != nil {
+		t.Fatalf("lego client creation failed: %v", err)
+	}
+	if err := legoClient.Challenge.SetDNS01Provider(&commandDNSProvider{presentCmd: presentCmd, cleanupCmd: cleanupCmd}); err != nil {
+		t.Fatalf("lego dns provider setup failed: %v", err)
+	}
+
+	reg, err := legoClient.Registration.Register(legoreg.RegisterOptions{TermsOfServiceAgreed: true})
+	if err != nil {
+		t.Fatalf("lego registration failed: %v", err)
+	}
+	legoUser.Registration = reg
+
+	obtainReq := legocert.ObtainRequest{Domains: []string{domain}, Bundle: true}
+	certRes, err := legoClient.Certificate.Obtain(obtainReq)
+	if err != nil {
+		t.Fatalf("lego certificate obtain via gateway failed: %v", err)
+	}
+	if len(certRes.Certificate) == 0 {
+		t.Fatal("lego returned empty certificate chain")
+	}
+
+	certs := parseCerts(t, certRes.Certificate)
+	assertCertSANs(t, certs, domain)
+	testLogf(t, "lego", "lego via gateway issued %d certificate(s)", len(certs))
 }
 
 func runDNSHook(t *testing.T, phase, command, fqdn, dnsValue, token, keyAuthorization string) {
 	t.Helper()
+	if err := runDNSHookCommand(phase, command, fqdn, dnsValue, token, keyAuthorization); err != nil {
+		t.Fatalf("dns hook (%s) failed: %v", phase, err)
+	}
+}
+
+func runDNSHookCommand(phase, command, fqdn, dnsValue, token, keyAuthorization string) error {
 	domain := strings.TrimPrefix(fqdn, "_acme-challenge.")
 
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Env = append(os.Environ(),
-		// Legacy e2e-specific variables used by existing shell templates.
 		"ACME_E2E_PHASE="+phase,
 		"ACME_E2E_FQDN="+fqdn,
 		"ACME_E2E_DNS_VALUE="+dnsValue,
 		"ACME_E2E_TOKEN="+token,
 		"ACME_E2E_KEY_AUTHORIZATION="+keyAuthorization,
-		// Gateway/certbot-compatible aliases for compiled hook binaries.
 		"CERTBOT_DOMAIN="+domain,
 		"CERTBOT_VALIDATION="+dnsValue,
 		"CERTBOT_TOKEN="+token,
@@ -379,19 +543,71 @@ func runDNSHook(t *testing.T, phase, command, fqdn, dnsValue, token, keyAuthoriz
 		"ACME_GATEWAY_DNS_VALUE="+dnsValue,
 		"ACME_GATEWAY_TOKEN="+token,
 	)
-	// Pass fqdn and dnsValue as positional args ($1, $2) to hook script
-	cmd.Args = append(cmd.Args, "--", fqdn, dnsValue)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("dns hook (%s) failed: %v\noutput:\n%s", phase, err, string(out))
+		return fmt.Errorf("%w\noutput:\n%s", err, string(out))
 	}
 	if len(out) > 0 {
-		t.Logf("dns hook (%s) output:\n%s", phase, string(out))
+		log.Printf("[lego-dns] %s output:\n%s", phase, string(out))
 	}
+	return nil
 }
 
-func waitForTXTRecord(t *testing.T, fqdn, want string) {
+func waitForAuthoritativeTXT(fqdn, want string, timeout, interval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	nsHosts, nsErr := authoritativeNameservers(fqdn)
+	if nsErr == nil && len(nsHosts) > 0 {
+		log.Printf("[lego-dns] authoritative nameservers for %s: %v", fqdn, nsHosts)
+	}
+
+	attempt := 0
+	for time.Now().Before(deadline) {
+		attempt++
+		if len(nsHosts) > 0 {
+			missing := make([]string, 0, len(nsHosts))
+			for _, ns := range nsHosts {
+				txts, err := lookupTXTAtNameserver(fqdn, ns)
+				if err != nil {
+					missing = append(missing, ns+"(lookup failed)")
+					continue
+				}
+				found := false
+				for _, v := range txts {
+					if v == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					missing = append(missing, ns)
+				}
+			}
+			if len(missing) == 0 {
+				log.Printf("[lego-dns] authoritative TXT visible for %s after %d attempt(s)", fqdn, attempt)
+				return nil
+			}
+			if attempt == 1 || attempt%6 == 0 {
+				log.Printf("[lego-dns] authoritative TXT not yet visible for %s; missing=%v", fqdn, missing)
+			}
+		} else {
+			txts, err := net.LookupTXT(fqdn)
+			if err == nil {
+				for _, v := range txts {
+					if v == want {
+						log.Printf("[lego-dns] recursive TXT visible for %s after %d attempt(s)", fqdn, attempt)
+						return nil
+					}
+				}
+			}
+		}
+		time.Sleep(interval)
+	}
+
+	return fmt.Errorf("authoritative TXT propagation timeout after %s for %s", timeout, fqdn)
+}
+
+func waitForTXTRecord(t *testing.T, fqdn, want string) bool {
 	t.Helper()
 
 	timeout := envDurationSeconds("ACME_E2E_DNS_TIMEOUT_SECONDS", 300)
@@ -399,16 +615,17 @@ func waitForTXTRecord(t *testing.T, fqdn, want string) {
 
 	nsHosts, nsErr := authoritativeNameservers(fqdn)
 	if nsErr != nil {
-		t.Logf("warning: could not resolve authoritative nameservers for %s: %v", fqdn, nsErr)
+		testLogf(t, "test", "warning: could not resolve authoritative nameservers for %s: %v", fqdn, nsErr)
 	}
 	if len(nsHosts) > 0 {
-		t.Logf("authoritative nameservers for %s: %v", fqdn, nsHosts)
+		testLogf(t, "test", "authoritative nameservers for %s: %v", fqdn, nsHosts)
 	}
 
 	deadline := time.Now().Add(timeout)
 	attempt := 0
 	for time.Now().Before(deadline) {
 		attempt++
+
 		var matched bool
 		if len(nsHosts) > 0 {
 			missing := make([]string, 0, len(nsHosts))
@@ -418,14 +635,14 @@ func waitForTXTRecord(t *testing.T, fqdn, want string) {
 				if err != nil {
 					missing = append(missing, ns+"(lookup failed)")
 					if attempt == 1 {
-						t.Logf("DEBUG: ns %s lookup error: %v", ns, err)
+						testLogf(t, "test", "DEBUG: ns %s lookup error: %v", ns, err)
 					}
 					continue
 				}
-				t.Logf("DEBUG: ns %s returned %d TXT records", ns, len(txts))
+				testLogf(t, "test", "DEBUG: ns %s returned %d TXT records", ns, len(txts))
 				nsMatched := false
 				for _, v := range txts {
-					t.Logf("DEBUG: ns %s has TXT: %s", ns, v)
+					testLogf(t, "test", "DEBUG: ns %s has TXT: %s", ns, v)
 					if v == want {
 						nsMatched = true
 						break
@@ -439,43 +656,44 @@ func waitForTXTRecord(t *testing.T, fqdn, want string) {
 			}
 			matched = len(missing) == 0
 			if !matched && (attempt == 1 || attempt%6 == 0) {
-				t.Logf("TXT not yet visible on all authoritative NS for %s; still missing on: %v", fqdn, missing)
+				testLogf(t, "test", "TXT not yet visible on all authoritative NS for %s; still missing on: %v", fqdn, missing)
 			}
 			if matched {
-				t.Logf("TXT record now visible on all authoritative NS for %s (found after %d attempts, successful NS: %v)", fqdn, attempt, successfulNS)
-				return
+				testLogf(t, "test", "TXT record now visible on all authoritative NS for %s (found after %d attempts, successful NS: %v)", fqdn, attempt, successfulNS)
+				return true
 			}
 		} else {
 			// Fallback if NS discovery fails.
-			t.Logf("DEBUG: NS discovery failed, falling back to recursive resolver for %s", fqdn)
+			testLogf(t, "test", "DEBUG: NS discovery failed, falling back to recursive resolver for %s", fqdn)
 			txts, err := net.LookupTXT(fqdn)
 			if err != nil {
-				t.Logf("DEBUG: recursive lookup failed for %s: %v", fqdn, err)
+				testLogf(t, "test", "DEBUG: recursive lookup failed for %s: %v", fqdn, err)
 			} else {
-				t.Logf("DEBUG: recursive lookup returned %d TXT records for %s", len(txts), fqdn)
+				testLogf(t, "test", "DEBUG: recursive lookup returned %d TXT records for %s", len(txts), fqdn)
 				for _, v := range txts {
 					if v == want {
-						t.Logf("DEBUG: found matching TXT record via recursive resolver after %d attempts", attempt)
+						testLogf(t, "test", "DEBUG: found matching TXT record via recursive resolver after %d attempts", attempt)
 						matched = true
 						break
 					}
 				}
 			}
 			if matched {
-				return
+				return true
 			}
 		}
 
 		if matched {
-			return
+			return true
 		}
 		timeLeft := deadline.Sub(time.Now())
 		if attempt == 1 || attempt%6 == 0 {
-			t.Logf("DEBUG: waitForTXTRecord still waiting (attempt %d, %v remaining)", attempt, timeLeft)
+			testLogf(t, "test", "DEBUG: waitForTXTRecord still waiting (attempt %d, %v remaining)", attempt, timeLeft)
 		}
 		time.Sleep(interval)
 	}
 	t.Fatalf("TXT propagation timeout after %s for %s (wanted %q)", timeout, fqdn, want)
+	return false
 }
 
 func waitForTXTRecordInBind(t *testing.T, fqdn, want string) {
@@ -749,13 +967,20 @@ func verifySOAConsistency(t *testing.T, domain string) {
 	// Query SOA from each nameserver
 	soaSerials := make(map[string]string)
 	for _, ns := range nsHosts {
+		ips, ipErr := net.LookupIP(ns)
+		if ipErr != nil || len(ips) == 0 {
+			t.Logf("DEBUG: ns %s IP resolution failed: %v", ns, ipErr)
+			soaSerials[ns] = "ERROR"
+			continue
+		}
+		nsIP := ips[0].String()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
 		r := &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 				d := net.Dialer{}
-				return d.DialContext(ctx, "udp", net.JoinHostPort(ns, "53"))
+				return d.DialContext(ctx, "udp", net.JoinHostPort(nsIP, "53"))
 			},
 		}
 

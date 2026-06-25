@@ -47,8 +47,8 @@ set -e
 # Environment variables
 # ──────────────────────────────────────────────────────────────────────────────
 
-FQDN="${CERTBOT_DOMAIN:-$ACME_GATEWAY_DOMAIN}"
-VALIDATION="${CERTBOT_VALIDATION:-$ACME_GATEWAY_TOKEN}"
+FQDN="${CERTBOT_FQDN_EFFECTIVE:-${ACME_GATEWAY_FQDN_EFFECTIVE:-${CERTBOT_DOMAIN:-$ACME_GATEWAY_DOMAIN}}}"
+VALIDATION="${CERTBOT_VALIDATION:-${ACME_GATEWAY_DNS_VALUE:-$ACME_GATEWAY_TOKEN}}"
 API_TOKEN="${EXCEDO_API_TOKEN}"
 API_URL="${EXCEDO_API_URL:-https://api.domainname.systems}"
 MODE="${1:-deploy}"

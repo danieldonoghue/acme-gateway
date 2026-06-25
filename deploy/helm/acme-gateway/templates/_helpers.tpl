@@ -111,6 +111,33 @@ bootstrap:
   dns_hook:
     deploy_script: {{ .Values.config.bootstrap.dnsHook.deployScript | quote }}
     cleanup_script: {{ .Values.config.bootstrap.dnsHook.cleanupScript | quote }}
+  {{- if .Values.config.bootstrap.dnsHook.propagation }}
+      propagation:
+  {{- if hasKey .Values.config.bootstrap.dnsHook.propagation "enabled" }}
+    enabled: {{ .Values.config.bootstrap.dnsHook.propagation.enabled }}
+  {{- else }}
+    enabled: true
+  {{- end }}
+    timeout_seconds: {{ default 300 .Values.config.bootstrap.dnsHook.propagation.timeoutSeconds }}
+    poll_seconds: {{ default 2 .Values.config.bootstrap.dnsHook.propagation.pollSeconds }}
+    min_consecutive_successes: {{ default 3 .Values.config.bootstrap.dnsHook.propagation.minConsecutiveSuccesses }}
+    quorum_percent: {{ default 100 .Values.config.bootstrap.dnsHook.propagation.quorumPercent }}
+  {{- end }}
+  {{- if .Values.config.bootstrap.dnsHook.delegation }}
+      delegation:
+  {{- if hasKey .Values.config.bootstrap.dnsHook.delegation "enabled" }}
+    enabled: {{ .Values.config.bootstrap.dnsHook.delegation.enabled }}
+  {{- else }}
+    enabled: false
+  {{- end }}
+    mode: {{ default "strict" .Values.config.bootstrap.dnsHook.delegation.mode | quote }}
+  {{- if .Values.config.bootstrap.dnsHook.delegation.allowedZoneSuffixes }}
+    allowed_zone_suffixes:
+  {{- range .Values.config.bootstrap.dnsHook.delegation.allowedZoneSuffixes }}
+    - {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
 {{- end }}
 
 upstreams:
@@ -134,6 +161,33 @@ upstreams:
       deploy_script: {{ $u.dnsHook.deployScript | quote }}
 {{- if $u.dnsHook.cleanupScript }}
       cleanup_script: {{ $u.dnsHook.cleanupScript | quote }}
+{{- end }}
+{{- if $u.dnsHook.propagation }}
+      propagation:
+{{- if hasKey $u.dnsHook.propagation "enabled" }}
+  enabled: {{ $u.dnsHook.propagation.enabled }}
+{{- else }}
+  enabled: true
+{{- end }}
+  timeout_seconds: {{ default 300 $u.dnsHook.propagation.timeoutSeconds }}
+  poll_seconds: {{ default 2 $u.dnsHook.propagation.pollSeconds }}
+  min_consecutive_successes: {{ default 3 $u.dnsHook.propagation.minConsecutiveSuccesses }}
+  quorum_percent: {{ default 100 $u.dnsHook.propagation.quorumPercent }}
+{{- end }}
+{{- if $u.dnsHook.delegation }}
+      delegation:
+{{- if hasKey $u.dnsHook.delegation "enabled" }}
+  enabled: {{ $u.dnsHook.delegation.enabled }}
+{{- else }}
+  enabled: false
+{{- end }}
+  mode: {{ default "strict" $u.dnsHook.delegation.mode | quote }}
+{{- if $u.dnsHook.delegation.allowedZoneSuffixes }}
+  allowed_zone_suffixes:
+{{- range $u.dnsHook.delegation.allowedZoneSuffixes }}
+  - {{ . | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

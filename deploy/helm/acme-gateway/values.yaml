@@ -97,6 +97,20 @@ config:
       # under /hooks) for distroless-compatible runtime behavior.
       deployScript: "/hooks/bind-dns-deploy"
       cleanupScript: "/hooks/bind-dns-cleanup"
+      # -- Authoritative propagation checks before triggering upstream challenge.
+      propagation:
+        enabled: true
+        timeoutSeconds: 300
+        pollSeconds: 2
+        minConsecutiveSuccesses: 3
+        quorumPercent: 100
+      # -- Optional CNAME delegation support for _acme-challenge.<domain>.
+      delegation:
+        enabled: false
+        mode: "strict" # strict|permissive
+        # -- Optional suffix allow-list for delegated effective targets.
+        # Empty means any delegated zone is accepted.
+        allowedZoneSuffixes: []
 
   # -- Map of upstream ACME CAs. Keys are upstream IDs referenced in routing rules.
   upstreams:
@@ -117,6 +131,16 @@ config:
       # dnsHook:
       #   deployScript: "/hooks/bind-dns-deploy"
       #   cleanupScript: "/hooks/bind-dns-cleanup"
+      #   propagation:
+      #     enabled: true
+      #     timeoutSeconds: 300
+      #     pollSeconds: 2
+      #     minConsecutiveSuccesses: 3
+      #     quorumPercent: 100
+      #   delegation:
+      #     enabled: false
+      #     mode: "strict"
+      #     allowedZoneSuffixes: []
     # -- Example: Let's Encrypt staging (for testing)
     # letsencrypt-staging:
     #   directoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -202,7 +226,11 @@ tls:
 #
 # For distroless images, prefer direct executable hook paths (for example /hooks/*)
 # and leave this section disabled unless wrapper scripts are explicitly needed.
-# Env vars provided: CERTBOT_DOMAIN, CERTBOT_VALIDATION, CERTBOT_TOKEN.
+# Env vars provided: CERTBOT_DOMAIN, CERTBOT_VALIDATION, CERTBOT_TOKEN,
+# CERTBOT_DOMAIN_SOURCE, CERTBOT_DOMAIN_EFFECTIVE,
+# CERTBOT_FQDN_SOURCE, CERTBOT_FQDN_EFFECTIVE,
+# ACME_GATEWAY_DOMAIN_SOURCE, ACME_GATEWAY_DOMAIN_EFFECTIVE,
+# ACME_GATEWAY_FQDN_SOURCE, ACME_GATEWAY_FQDN_EFFECTIVE.
 #
 # WARNING: the published release image (distroless/nonroot) contains no shell
 # interpreter. Shell-based wrappers will fail at runtime unless you use a

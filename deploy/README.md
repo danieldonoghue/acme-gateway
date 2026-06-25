@@ -87,6 +87,12 @@ Limitation (intentional): hook execution is per-upstream and uses one configured
 
 For containerized deployments, prefer compiled hook binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) instead of shell scripts.
 
+Hook hardening options are available under each `dns_hook` block:
+- `propagation`: authoritative nameserver quorum checks before upstream challenge trigger.
+- `delegation`: optional `_acme-challenge` CNAME delegation support (with optional `allowed_zone_suffixes`; if omitted, any delegated zone is accepted).
+
+Hooks also receive source/effective target env vars (`*_SOURCE` and `*_EFFECTIVE`) so scripts can write to delegated effective names when delegation is enabled.
+
 ```yaml
 # values.yaml (Helm)
 config:

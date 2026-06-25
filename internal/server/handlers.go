@@ -697,6 +697,7 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, errServerInternal("preparing dns-01 challenge: "+err.Error()))
 		return
 	}
+
 	h.log.Info("triggering upstream challenge",
 		"challenge_id", chalID,
 		"order_id", order.ID,
@@ -1067,6 +1068,7 @@ func (h *Handler) orderClient(ctx context.Context, order *model.Order) (*upstrea
 }
 
 func (h *Handler) dnsHookForUpstream(upstreamID string) config.DNSHook {
+
 	if up, ok := h.cfg.Upstreams[upstreamID]; ok {
 		if up.DNSHook.DeployScript != "" {
 			return up.DNSHook
@@ -1078,7 +1080,7 @@ func (h *Handler) dnsHookForUpstream(upstreamID string) config.DNSHook {
 	return config.DNSHook{}
 }
 
-func (h *Handler) runDNSHookScript(ctx context.Context, script, domain, fqdn, dnsValue, token string) error {
+func (h *Handler) runDNSHookScript(ctx context.Context, script string, target dnsChallengeTarget, dnsValue, token string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -1087,7 +1089,7 @@ func (h *Handler) runDNSHookScript(ctx context.Context, script, domain, fqdn, dn
 		return err
 	}
 
-	h.log.Info("dns hook starting", "script", script, "fqdn", fqdn, "domain", domain)
+	h.log.Info("dns hook starting", "script", script, "fqdn", target.EffectiveFQDN, "domain", target.EffectiveDomain)
 	started := time.Now()
 
 	// Execute the configured hook script directly (no shell), passing all
@@ -1096,11 +1098,19 @@ func (h *Handler) runDNSHookScript(ctx context.Context, script, domain, fqdn, dn
 	// for their own mode dispatch if needed.
 	cmd := exec.CommandContext(ctx, script) // #nosec G204,G702 -- operator-configured absolute executable path is validated above.
 	cmd.Env = append(os.Environ(),
-		"CERTBOT_DOMAIN="+domain,
+		"CERTBOT_DOMAIN="+target.EffectiveDomain,
+		"CERTBOT_DOMAIN_SOURCE="+target.SourceDomain,
+		"CERTBOT_DOMAIN_EFFECTIVE="+target.EffectiveDomain,
+		"CERTBOT_FQDN_SOURCE="+target.SourceFQDN,
+		"CERTBOT_FQDN_EFFECTIVE="+target.EffectiveFQDN,
 		"CERTBOT_VALIDATION="+dnsValue,
 		"CERTBOT_TOKEN="+token,
-		"ACME_GATEWAY_DOMAIN="+domain,
-		"ACME_GATEWAY_FQDN="+fqdn,
+		"ACME_GATEWAY_DOMAIN="+target.EffectiveDomain,
+		"ACME_GATEWAY_FQDN="+target.EffectiveFQDN,
+		"ACME_GATEWAY_DOMAIN_SOURCE="+target.SourceDomain,
+		"ACME_GATEWAY_DOMAIN_EFFECTIVE="+target.EffectiveDomain,
+		"ACME_GATEWAY_FQDN_SOURCE="+target.SourceFQDN,
+		"ACME_GATEWAY_FQDN_EFFECTIVE="+target.EffectiveFQDN,
 		"ACME_GATEWAY_DNS_VALUE="+dnsValue,
 		"ACME_GATEWAY_TOKEN="+token,
 	)
@@ -1109,7 +1119,7 @@ func (h *Handler) runDNSHookScript(ctx context.Context, script, domain, fqdn, dn
 	if err != nil {
 		h.log.Warn("dns hook failed",
 			"script", script,
-			"fqdn", fqdn,
+			"fqdn", target.EffectiveFQDN,
 			"duration_ms", time.Since(started).Milliseconds(),
 		)
 		return fmt.Errorf("dns hook %q failed: %w; output: %s", script, err, strings.TrimSpace(string(out)))
@@ -1117,7 +1127,7 @@ func (h *Handler) runDNSHookScript(ctx context.Context, script, domain, fqdn, dn
 	if len(out) > 0 {
 		h.log.Debug("dns hook output", "script", script, "output", strings.TrimSpace(string(out)))
 	}
-	h.log.Info("dns hook completed", "script", script, "fqdn", fqdn, "duration_ms", time.Since(started).Milliseconds())
+	h.log.Info("dns hook completed", "script", script, "fqdn", target.EffectiveFQDN, "duration_ms", time.Since(started).Milliseconds())
 	return nil
 }
 
@@ -1141,6 +1151,9 @@ func validateDNSHookScriptPath(script string) error {
 	return nil
 }
 
+// prepareDNS01Challenge deploys the DNS-01 challenge record via hook and starts
+// an async cleanup watcher that will remove the record when the authorization
+// reaches a terminal state (valid or invalid).
 func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order, client *upstream.Client, upstreamChallengeURL string) error {
 	hook := h.dnsHookForUpstream(order.UpstreamID)
 	if hook.DeployScript == "" {
@@ -1189,15 +1202,23 @@ func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order,
 				return fmt.Errorf("computing dns-01 TXT value: %w", err)
 			}
 			fqdn := "_acme-challenge." + domain
+			target, err := h.resolveDNSChallengeTarget(ctx, hook, domain, fqdn)
+			if err != nil {
+				return err
+			}
 
 			h.log.Info("deploying dns-01 TXT via hook",
 				"order_id", order.ID,
 				"upstream_id", order.UpstreamID,
-				"fqdn", fqdn,
+				"fqdn", target.EffectiveFQDN,
+				"source_fqdn", target.SourceFQDN,
 				"authz_url", authzRM.UpstreamURL,
 				"challenge_url", ch.URL,
 			)
-			if err := h.runDNSHookScript(ctx, hook.DeployScript, domain, fqdn, dnsValue, ch.Token); err != nil {
+			if err := h.runDNSHookScript(ctx, hook.DeployScript, target, dnsValue, ch.Token); err != nil {
+				return err
+			}
+			if err := h.waitForDNSPropagation(ctx, hook, target.EffectiveFQDN, dnsValue); err != nil {
 				return err
 			}
 
@@ -1207,17 +1228,26 @@ func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order,
 					"order_id", order.ID,
 					"upstream_id", order.UpstreamID,
 					"authz_url", authzRM.UpstreamURL,
-					"fqdn", fqdn,
+					"fqdn", target.EffectiveFQDN,
 				)
-				go func(cleanupBaseCtx context.Context, orderID, upstreamID, authzURL, domain, fqdn, dnsValue, token, cleanupScript string) {
-					cleanupCtx, cancel := context.WithTimeout(cleanupBaseCtx, 2*time.Minute)
+				go func(cleanupBaseCtx context.Context, orderID, upstreamID, authzURL, dnsValue, token, cleanupScript string, target dnsChallengeTarget) {
+					// Wait for authorization to reach a terminal state (valid or invalid) before cleaning up.
+					// LE staging may retry validation, so use a longer timeout (5 minutes) to allow retries.
+					cleanupCtx, cancel := context.WithTimeout(cleanupBaseCtx, 5*time.Minute)
 					defer cancel()
 					ticker := time.NewTicker(time.Second)
 					defer ticker.Stop()
+					validationStarted := time.Time{}
 					for {
 						select {
 						case <-cleanupCtx.Done():
-							h.log.Warn("dns-01 cleanup timed out waiting for authorization completion", "order_id", orderID, "upstream_id", upstreamID, "fqdn", fqdn)
+							h.log.Warn("dns-01 cleanup timed out waiting for authorization validation", "order_id", orderID, "upstream_id", upstreamID, "fqdn", target.EffectiveFQDN)
+							// On timeout, clean up anyway (DNS record shouldn't persist forever)
+							if err := h.runDNSHookScript(cleanupCtx, cleanupScript, target, dnsValue, token); err != nil {
+								h.log.Warn("dns-01 cleanup hook failed on timeout", "order_id", orderID, "upstream_id", upstreamID, "fqdn", target.EffectiveFQDN, "error", err)
+								return
+							}
+							h.log.Info("dns-01 cleanup hook completed (on timeout)", "order_id", orderID, "upstream_id", upstreamID, "fqdn", target.EffectiveFQDN)
 							return
 						case <-ticker.C:
 							upAuthz, err := client.GetAuthorization(cleanupCtx, authzURL)
@@ -1225,24 +1255,30 @@ func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order,
 								continue
 							}
 							if upAuthz.Status == "pending" {
+								if validationStarted.IsZero() {
+									validationStarted = time.Now()
+									h.log.Debug("dns-01 cleanup watcher: waiting for validation", "order_id", orderID, "upstream_id", upstreamID, "authz_url", authzURL, "fqdn", target.EffectiveFQDN)
+								}
 								continue
 							}
-							h.log.Info("dns-01 cleanup watcher detected authorization completion",
+
+							// Authorization reached a terminal state - run cleanup
+							h.log.Info("dns-01 cleanup watcher: authorization terminal state reached, cleaning up",
 								"order_id", orderID,
 								"upstream_id", upstreamID,
 								"authz_url", authzURL,
 								"authz_status", upAuthz.Status,
-								"fqdn", fqdn,
+								"fqdn", target.EffectiveFQDN,
 							)
-							if err := h.runDNSHookScript(cleanupCtx, cleanupScript, domain, fqdn, dnsValue, token); err != nil {
-								h.log.Warn("dns-01 cleanup hook failed", "order_id", orderID, "upstream_id", upstreamID, "fqdn", fqdn, "error", err)
+							if err := h.runDNSHookScript(cleanupCtx, cleanupScript, target, dnsValue, token); err != nil {
+								h.log.Warn("dns-01 cleanup hook failed", "order_id", orderID, "upstream_id", upstreamID, "fqdn", target.EffectiveFQDN, "error", err)
 								return
 							}
-							h.log.Info("dns-01 cleanup hook completed", "order_id", orderID, "upstream_id", upstreamID, "fqdn", fqdn)
+							h.log.Info("dns-01 cleanup hook completed", "order_id", orderID, "upstream_id", upstreamID, "fqdn", target.EffectiveFQDN, "authz_status", upAuthz.Status)
 							return
 						}
 					}
-				}(cleanupBaseCtx, order.ID, order.UpstreamID, authzRM.UpstreamURL, domain, fqdn, dnsValue, ch.Token, hook.CleanupScript)
+				}(cleanupBaseCtx, order.ID, order.UpstreamID, authzRM.UpstreamURL, dnsValue, ch.Token, hook.CleanupScript, target)
 			}
 
 			return nil

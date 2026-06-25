@@ -640,3 +640,104 @@ routing:
 		t.Errorf("default listen in TLS mode = %q, want %q", got.Server.Listen, ":443")
 	}
 }
+
+func TestLoad_InvalidDNSHookDelegationMode(t *testing.T) {
+	cfg := `
+server:
+	base_url: "https://acme-gateway.internal"
+state:
+	db_path: "/tmp/test.db"
+bootstrap:
+	cert_path: "/etc/acme-gateway/tls.crt"
+	key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+	le:
+		directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+		dns_hook:
+			delegation:
+				mode: "invalid"
+routing:
+	default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid delegation.mode")
+	}
+}
+
+func TestLoad_InvalidDNSHookPropagationQuorum(t *testing.T) {
+	cfg := `
+server:
+	base_url: "https://acme-gateway.internal"
+state:
+	db_path: "/tmp/test.db"
+bootstrap:
+	cert_path: "/etc/acme-gateway/tls.crt"
+	key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+	le:
+		directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+		dns_hook:
+			propagation:
+				quorum_percent: 101
+routing:
+	default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid propagation.quorum_percent")
+	}
+}
+
+func TestLoad_EmptyAllowedZoneSuffixRejected(t *testing.T) {
+	cfg := `
+server:
+	base_url: "https://acme-gateway.internal"
+state:
+	db_path: "/tmp/test.db"
+bootstrap:
+	cert_path: "/etc/acme-gateway/tls.crt"
+	key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+	le:
+		directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+		dns_hook:
+			delegation:
+				allowed_zone_suffixes:
+					- ""
+routing:
+	default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for empty allowed_zone_suffixes entry")
+	}
+}
+
+func TestLoad_EmptyAllowedZoneSuffixesAccepted(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    dns_hook:
+      delegation:
+        enabled: true
+routing:
+  default_upstream: le
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected config to load with no allowed_zone_suffixes list, got: %v", err)
+	}
+}

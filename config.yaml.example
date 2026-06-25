@@ -37,6 +37,22 @@ bootstrap:
   dns_hook:
     deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
     cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
+    # Optional authoritative propagation gate before triggering upstream dns-01.
+    propagation:
+      enabled: true
+      timeout_seconds: 300
+      poll_seconds: 2
+      min_consecutive_successes: 3
+      quorum_percent: 100
+    # Optional CNAME delegation support for dns-01. When enabled, if
+    # _acme-challenge.<domain> is a CNAME, hooks write/check at the delegated
+    # target name. allowed_zone_suffixes is optional; if omitted/empty, any
+    # delegated zone is accepted.
+    delegation:
+      enabled: false
+      mode: strict # strict|permissive
+      # allowed_zone_suffixes:
+      #   - "delegated.example.net"
 
 upstreams:
   letsencrypt:
@@ -62,6 +78,17 @@ upstreams:
     dns_hook:
       deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
       cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
+      propagation:
+        enabled: true
+        timeout_seconds: 300
+        poll_seconds: 2
+        min_consecutive_successes: 3
+        quorum_percent: 100
+      delegation:
+        enabled: false
+        mode: strict # strict|permissive
+        # allowed_zone_suffixes:
+        #   - "delegated.example.net"
     # No EAB required for Let's Encrypt.
     # ca_cert_path is not needed for public CAs with well-known roots.
 

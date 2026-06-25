@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -63,8 +64,98 @@ type BootstrapConfig struct {
 
 // DNSHook holds paths to dns-01 hook scripts.
 type DNSHook struct {
-	DeployScript  string `yaml:"deploy_script"`
-	CleanupScript string `yaml:"cleanup_script"`
+	DeployScript  string               `yaml:"deploy_script"`
+	CleanupScript string               `yaml:"cleanup_script"`
+	Propagation   DNSPropagationPolicy `yaml:"propagation,omitempty"`
+	Delegation    DNSDelegationPolicy  `yaml:"delegation,omitempty"`
+}
+
+// DNSPropagationPolicy configures authoritative propagation checks before the
+// gateway asks the upstream CA to validate a dns-01 challenge.
+type DNSPropagationPolicy struct {
+	// Enabled defaults to true when omitted.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// TimeoutSeconds defaults to 300 when omitted or <= 0.
+	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
+	// PollSeconds defaults to 2 when omitted or <= 0.
+	PollSeconds int `yaml:"poll_seconds,omitempty"`
+	// MinConsecutiveSuccesses defaults to 3 when omitted or <= 0.
+	MinConsecutiveSuccesses int `yaml:"min_consecutive_successes,omitempty"`
+	// QuorumPercent defaults to 100 when omitted or <= 0.
+	QuorumPercent int `yaml:"quorum_percent,omitempty"`
+}
+
+// EnabledOrDefault reports whether propagation checks are enabled.
+func (p DNSPropagationPolicy) EnabledOrDefault() bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
+}
+
+// TimeoutOrDefault returns the configured propagation timeout or the default.
+func (p DNSPropagationPolicy) TimeoutOrDefault() time.Duration {
+	v := p.TimeoutSeconds
+	if v <= 0 {
+		v = 300
+	}
+	return time.Duration(v) * time.Second
+}
+
+// PollOrDefault returns the configured propagation poll interval or the default.
+func (p DNSPropagationPolicy) PollOrDefault() time.Duration {
+	v := p.PollSeconds
+	if v <= 0 {
+		v = 2
+	}
+	return time.Duration(v) * time.Second
+}
+
+// MinConsecutiveOrDefault returns the configured success streak requirement or the default.
+func (p DNSPropagationPolicy) MinConsecutiveOrDefault() int {
+	v := p.MinConsecutiveSuccesses
+	if v <= 0 {
+		v = 3
+	}
+	return v
+}
+
+// QuorumPercentOrDefault returns the configured authoritative quorum percentage or the default.
+func (p DNSPropagationPolicy) QuorumPercentOrDefault() int {
+	v := p.QuorumPercent
+	if v <= 0 {
+		v = 100
+	}
+	return v
+}
+
+// DNSDelegationPolicy controls optional CNAME delegation handling for dns-01.
+type DNSDelegationPolicy struct {
+	// Enabled defaults to false when omitted.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// Mode controls error handling when delegation lookup fails. Allowed values:
+	// strict (default) and permissive.
+	Mode string `yaml:"mode,omitempty"`
+	// AllowedZoneSuffixes, when non-empty, restrict the final delegated target to
+	// one of these DNS suffixes. When empty, any delegated target is accepted.
+	AllowedZoneSuffixes []string `yaml:"allowed_zone_suffixes,omitempty"`
+}
+
+// EnabledOrDefault reports whether delegation resolution is enabled.
+func (d DNSDelegationPolicy) EnabledOrDefault() bool {
+	if d.Enabled == nil {
+		return false
+	}
+	return *d.Enabled
+}
+
+// ModeOrDefault returns the configured delegation mode or the default mode.
+func (d DNSDelegationPolicy) ModeOrDefault() string {
+	mode := strings.ToLower(strings.TrimSpace(d.Mode))
+	if mode == "" {
+		return "strict"
+	}
+	return mode
 }
 
 // EABConfig holds External Account Binding credentials for an upstream CA.
@@ -186,6 +277,9 @@ func validate(cfg *Config) error {
 		if up.AccountCount > 1 && up.EAB != nil {
 			return fmt.Errorf("upstreams.%s: account_count > 1 requires no EAB (each account needs its own credential; configure separate upstream entries instead)", name)
 		}
+		if err := validateDNSHookPolicy(fmt.Sprintf("upstreams.%s.dns_hook", name), up.DNSHook); err != nil {
+			return err
+		}
 	}
 
 	// Validate routing rules.
@@ -250,11 +344,41 @@ func validate(cfg *Config) error {
 			if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
 				return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap is enabled")
 			}
+			if err := validateDNSHookPolicy("bootstrap.dns_hook", cfg.Bootstrap.DNSHook); err != nil {
+				return err
+			}
 		} else {
 			// bootstrap.enabled: false — operator supplies the certificate externally.
 			if cfg.Bootstrap.CertPath == "" || cfg.Bootstrap.KeyPath == "" {
 				return fmt.Errorf("bootstrap.cert_path and bootstrap.key_path are required when bootstrap.enabled is false (externally-managed cert)")
 			}
+		}
+	}
+
+	return nil
+}
+
+func validateDNSHookPolicy(path string, hook DNSHook) error {
+	if hook.Propagation.TimeoutSeconds < 0 {
+		return fmt.Errorf("%s.propagation.timeout_seconds must be >= 0", path)
+	}
+	if hook.Propagation.PollSeconds < 0 {
+		return fmt.Errorf("%s.propagation.poll_seconds must be >= 0", path)
+	}
+	if hook.Propagation.MinConsecutiveSuccesses < 0 {
+		return fmt.Errorf("%s.propagation.min_consecutive_successes must be >= 0", path)
+	}
+	if hook.Propagation.QuorumPercent < 0 || hook.Propagation.QuorumPercent > 100 {
+		return fmt.Errorf("%s.propagation.quorum_percent must be between 0 and 100", path)
+	}
+
+	mode := hook.Delegation.ModeOrDefault()
+	if mode != "strict" && mode != "permissive" {
+		return fmt.Errorf("%s.delegation.mode must be strict or permissive", path)
+	}
+	for i, suffix := range hook.Delegation.AllowedZoneSuffixes {
+		if strings.TrimSpace(suffix) == "" {
+			return fmt.Errorf("%s.delegation.allowed_zone_suffixes[%d] must not be empty", path, i)
 		}
 	}
 

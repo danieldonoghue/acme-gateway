@@ -130,6 +130,14 @@ helm uninstall acme-gateway --namespace acme-gateway
 | `config.upstreams.<id>.eab.hmacKey` | `""` | EAB HMAC key |
 | `config.upstreams.<id>.dnsHook.deployScript` | `""` | Optional dns-01 deploy command for this upstream (prefer direct binaries, e.g. `/hooks/bind-dns-deploy`) |
 | `config.upstreams.<id>.dnsHook.cleanupScript` | `""` | Optional dns-01 cleanup command for this upstream (prefer direct binaries, e.g. `/hooks/bind-dns-cleanup`) |
+| `config.upstreams.<id>.dnsHook.propagation.enabled` | `true` | Enable authoritative dns-01 propagation checks before challenge trigger |
+| `config.upstreams.<id>.dnsHook.propagation.timeoutSeconds` | `300` | Max wait for authoritative TXT convergence |
+| `config.upstreams.<id>.dnsHook.propagation.pollSeconds` | `2` | Poll interval for authoritative TXT checks |
+| `config.upstreams.<id>.dnsHook.propagation.minConsecutiveSuccesses` | `3` | Required consecutive successful TXT reads per nameserver |
+| `config.upstreams.<id>.dnsHook.propagation.quorumPercent` | `100` | Required percentage of authoritative nameservers to be stable |
+| `config.upstreams.<id>.dnsHook.delegation.enabled` | `false` | Enable `_acme-challenge` CNAME delegation handling |
+| `config.upstreams.<id>.dnsHook.delegation.mode` | `strict` | `strict` fails on delegation errors; `permissive` falls back to source FQDN |
+| `config.upstreams.<id>.dnsHook.delegation.allowedZoneSuffixes` | `[]` | Optional allowed delegated suffixes; empty means any delegated zone is accepted |
 | **Profiles** | | |
 | `config.profiles` | `{tlsserver: "..."}` | Map of profile name → description exposed to ACME clients |
 | **Routing** | | |

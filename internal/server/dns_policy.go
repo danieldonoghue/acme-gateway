@@ -228,12 +228,12 @@ func authoritativeNameservers(ctx context.Context, fqdn string) ([]string, error
 
 func queryTXTFromNameserver(ctx context.Context, nameserverHost, fqdn, expectedTXT string) (bool, error) {
 	fqdn = normalizeFQDN(fqdn)
-	ns := strings.TrimSuffix(nameserverHost, ".") + ":53"
+	ns := net.JoinHostPort(strings.TrimSuffix(nameserverHost, "."), "53")
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, "udp", ns)
+			return d.DialContext(ctx, network, ns)
 		},
 	}
 	values, err := resolver.LookupTXT(ctx, fqdn)

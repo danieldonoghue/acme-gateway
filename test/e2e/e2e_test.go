@@ -34,6 +34,11 @@ import (
 	"github.com/go-jose/go-jose/v4"
 )
 
+func init() {
+	// testLogfFromLogger emits its own timestamp and component fields.
+	log.SetFlags(0)
+}
+
 func testLogf(t *testing.T, component, format string, args ...any) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)
@@ -692,7 +697,7 @@ func waitForTXTRecord(t *testing.T, fqdn, want string) bool {
 		}
 		time.Sleep(interval)
 	}
-	t.Fatalf("TXT propagation timeout after %s for %s (wanted %q)", timeout, fqdn, want)
+	testLogf(t, "test", "TXT propagation timeout after %s for %s (wanted %q)", timeout, fqdn, want)
 	return false
 }
 

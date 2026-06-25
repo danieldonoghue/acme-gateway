@@ -1243,7 +1243,7 @@ func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order,
 						case <-cleanupCtx.Done():
 							h.log.Warn("dns-01 cleanup timed out waiting for authorization validation", "order_id", orderID, "upstream_id", upstreamID, "fqdn", target.EffectiveFQDN)
 							// On timeout, clean up anyway (DNS record shouldn't persist forever)
-							if err := h.runDNSHookScript(cleanupCtx, cleanupScript, target, dnsValue, token); err != nil {
+							if err := h.runDNSHookScript(cleanupBaseCtx, cleanupScript, target, dnsValue, token); err != nil {
 								h.log.Warn("dns-01 cleanup hook failed on timeout", "order_id", orderID, "upstream_id", upstreamID, "fqdn", target.EffectiveFQDN, "error", err)
 								return
 							}

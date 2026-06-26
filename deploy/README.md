@@ -88,7 +88,7 @@ Limitation (intentional): hook execution is per-upstream and uses one configured
 For containerized deployments, prefer compiled hook binaries from [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks) instead of shell scripts.
 
 Hook hardening options are available under each `dns_hook` block:
-- `propagation`: authoritative nameserver quorum checks before upstream challenge trigger.
+- `propagation`: authoritative nameserver quorum check, run in the background before the upstream challenge is triggered. The timeout is non-fatal — on timeout the gateway triggers the upstream anyway (the TXT is already published). Lower `quorum_percent` (e.g. `80`) for CAs whose anycast nameservers converge unevenly. See [docs/decisions/0008](../docs/decisions/0008-asynchronous-answer-challenge-processing.md).
 - `delegation`: optional `_acme-challenge` CNAME delegation support (with optional `allowed_zone_suffixes`; if omitted, any delegated zone is accepted).
 
 Hooks also receive source/effective target env vars (`*_SOURCE` and `*_EFFECTIVE`) so scripts can write to delegated effective names when delegation is enabled.

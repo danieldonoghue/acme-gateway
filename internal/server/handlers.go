@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -39,6 +40,92 @@ type Handler struct {
 	router *router.Router
 	pool   *upstream.Pool
 	log    *slog.Logger
+
+	// challengeProc tracks in-flight asynchronous dns-01 challenge processing,
+	// keyed by the gateway challenge ID. It makes answer-challenge idempotent
+	// (a retried POST does not re-deploy or re-trigger) and lets the authz poll
+	// surface a gateway-side failure that occurs before the upstream challenge
+	// is triggered. Entries are removed once the upstream challenge is triggered
+	// (after which the live upstream status is authoritative); entries left
+	// behind by a pre-trigger failure are reclaimed after challengeProcRetention
+	// so the map cannot grow without bound.
+	challengeProc sync.Map // map[string]*challengeProgress
+}
+
+// challengeProcRetention bounds how long a challenge processing record is kept
+// after creation. Successful records are deleted as soon as the upstream is
+// triggered; this retention reclaims records left behind by pre-trigger
+// failures. It comfortably exceeds an order's lifetime, so a failure stays
+// visible on the authz poll for as long as a client would still be polling.
+const challengeProcRetention = time.Hour
+
+// challengeProgress records the state of background dns-01 challenge processing
+// for a single challenge. status is "processing" while the gateway deploys the
+// record and triggers the upstream, or "invalid" if a gateway-side step failed
+// before the upstream challenge could be triggered.
+type challengeProgress struct {
+	// createdAt is set once at construction (before the value is published to
+	// the map) and never mutated, so it is read without holding mu.
+	createdAt time.Time
+
+	mu      sync.Mutex
+	status  string
+	errType string
+	errMsg  string
+}
+
+func (p *challengeProgress) snapshot() (status, errType, errMsg string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.status, p.errType, p.errMsg
+}
+
+func (p *challengeProgress) fail(errType, errMsg string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.status = "invalid"
+	p.errType = errType
+	p.errMsg = errMsg
+}
+
+// beginChallengeProc registers an in-flight processing record for chalID. It
+// returns the current progress and whether the caller should start the
+// background work — false when processing is already in flight or a terminal
+// failure has already been recorded, which keeps answer-challenge idempotent.
+func (h *Handler) beginChallengeProc(chalID string) (*challengeProgress, bool) {
+	now := time.Now()
+	h.evictStaleChallengeProc(now)
+	prog := &challengeProgress{status: "processing", createdAt: now}
+	if actual, loaded := h.challengeProc.LoadOrStore(chalID, prog); loaded {
+		if existing, ok := actual.(*challengeProgress); ok {
+			return existing, false
+		}
+		// Unreachable: only *challengeProgress values are ever stored.
+		return prog, false
+	}
+	return prog, true
+}
+
+// evictStaleChallengeProc removes challenge processing records older than the
+// retention window. It runs opportunistically when a new challenge begins, so
+// map growth is bounded by the rate of recent challenges rather than by the
+// cumulative count of past (especially failed) ones.
+func (h *Handler) evictStaleChallengeProc(now time.Time) {
+	h.challengeProc.Range(func(key, value any) bool {
+		if prog, ok := value.(*challengeProgress); ok && now.Sub(prog.createdAt) > challengeProcRetention {
+			h.challengeProc.Delete(key)
+		}
+		return true
+	})
+}
+
+// acmeProblem builds an RFC 8555 problem document for a gateway-side challenge
+// failure, mirroring the shape used for upstream challenge errors.
+func acmeProblem(errType, detail string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":   "urn:ietf:params:acme:error:" + errType,
+		"detail": detail,
+	}
 }
 
 // NewHandler creates a Handler with the given dependencies.
@@ -113,10 +200,10 @@ func (h *Handler) gatewayAuthzURLForChallenge(
 	client *upstream.Client,
 	orderID string,
 	upstreamChallengeURL string,
-) (string, error) {
+) (string, *upstream.Challenge, error) {
 	authzResources, err := h.store.GetAuthzResourcesByOrderID(ctx, orderID)
 	if err != nil {
-		return "", fmt.Errorf("listing authorization resources: %w", err)
+		return "", nil, fmt.Errorf("listing authorization resources: %w", err)
 	}
 
 	var lastErr error
@@ -127,17 +214,18 @@ func (h *Handler) gatewayAuthzURLForChallenge(
 			h.log.DebugContext(ctx, "failed to get upstream authorization", "url", authzRM.UpstreamURL, "error", err)
 			continue
 		}
-		for _, upChal := range upAuthz.Challenges {
-			if upChal.URL == upstreamChallengeURL {
-				return h.cfg.Server.BaseURL + "/authz/" + authzRM.GatewayID, nil
+		for i := range upAuthz.Challenges {
+			if upAuthz.Challenges[i].URL == upstreamChallengeURL {
+				chal := upAuthz.Challenges[i]
+				return h.cfg.Server.BaseURL + "/authz/" + authzRM.GatewayID, &chal, nil
 			}
 		}
 	}
 
 	if lastErr != nil {
-		return "", fmt.Errorf("failed to resolve challenge authorization: %w", lastErr)
+		return "", nil, fmt.Errorf("failed to resolve challenge authorization: %w", lastErr)
 	}
-	return "", fmt.Errorf("parent authorization not found for challenge")
+	return "", nil, fmt.Errorf("parent authorization not found for challenge")
 }
 
 // ─── Nonce ────────────────────────────────────────────────────────────────────
@@ -592,6 +680,7 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 
 	// Map challenge URLs to gateway UUIDs and rewrite the response.
 	rewrittenChallenges := make([]interface{}, len(upAuthz.Challenges))
+	authzFailed := false
 	for i, chal := range upAuthz.Challenges {
 		rm, err := h.store.GetResourceByUpstreamURL(r.Context(), chal.URL)
 		if err != nil {
@@ -630,12 +719,29 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		if chal.Error != nil {
 			chalResp["error"] = chal.Error
 		}
+		// Overlay a gateway-side failure recorded during asynchronous challenge
+		// processing (before the upstream was triggered). The upstream still
+		// reports "pending" in that case, so without this the client would poll
+		// until its own deadline instead of seeing the failure.
+		if v, ok := h.challengeProc.Load(gatewayID); ok {
+			if prog, ok := v.(*challengeProgress); ok {
+				if status, errType, errMsg := prog.snapshot(); status == "invalid" {
+					chalResp["status"] = "invalid"
+					chalResp["error"] = acmeProblem(errType, errMsg)
+					authzFailed = true
+				}
+			}
+		}
 		rewrittenChallenges[i] = chalResp
 	}
 
+	authzStatus := upAuthz.Status
+	if authzFailed {
+		authzStatus = "invalid"
+	}
 	resp := map[string]interface{}{
 		"identifier": upAuthz.Identifier,
-		"status":     upAuthz.Status,
+		"status":     authzStatus,
 		"challenges": rewrittenChallenges,
 	}
 	if upAuthz.Expires != "" {
@@ -688,47 +794,105 @@ func (h *Handler) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authzURL, err := h.gatewayAuthzURLForChallenge(r.Context(), client, order.ID, rm.UpstreamURL)
+	authzURL, upChal, err := h.gatewayAuthzURLForChallenge(r.Context(), client, order.ID, rm.UpstreamURL)
 	if err != nil {
 		h.writeError(w, errServerInternal("resolving challenge authorization: "+err.Error()))
 		return
 	}
-	if err := h.prepareDNS01Challenge(r.Context(), order, client, rm.UpstreamURL); err != nil {
-		h.writeError(w, errServerInternal("preparing dns-01 challenge: "+err.Error()))
-		return
-	}
-
-	h.log.Info("triggering upstream challenge",
-		"challenge_id", chalID,
-		"order_id", order.ID,
-		"upstream_id", order.UpstreamID,
-		"upstream_challenge_url", rm.UpstreamURL,
-	)
-
-	chal, err := client.TriggerChallenge(r.Context(), rm.UpstreamURL)
-	if err != nil {
-		h.writeError(w, errServerInternal("triggering challenge: "+err.Error()))
-		return
-	}
-	h.log.Info("upstream challenge triggered",
-		"challenge_id", chalID,
-		"order_id", order.ID,
-		"upstream_id", order.UpstreamID,
-		"challenge_type", chal.Type,
-		"challenge_status", chal.Status,
-	)
 	w.Header().Add("Link", h.upLinkHeader(authzURL))
 
 	resp := map[string]interface{}{
-		"type":   chal.Type,
-		"url":    h.cfg.Server.BaseURL + "/challenge/" + chalID,
-		"token":  chal.Token,
-		"status": chal.Status,
+		"type":  upChal.Type,
+		"url":   h.cfg.Server.BaseURL + "/challenge/" + chalID,
+		"token": upChal.Token,
 	}
-	if chal.Error != nil {
-		resp["error"] = chal.Error
+
+	// If the upstream challenge is already past "pending" (e.g. a pre-validated
+	// authorization), reflect its live state directly — there is no work to do.
+	if upChal.Status != "" && upChal.Status != "pending" {
+		resp["status"] = upChal.Status
+		if upChal.Error != nil {
+			resp["error"] = upChal.Error
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
 	}
+
+	// If a previous answer for this challenge already recorded a gateway-side
+	// failure, surface it; otherwise report that processing is under way. The
+	// heavy lifting (deploy hook, propagation wait, upstream trigger) runs in
+	// the background so this response returns immediately. Blocking here would
+	// expose the request to reverse-proxy and ACME-client read timeouts during
+	// DNS propagation (RFC 8555 §7.1.6: the challenge enters "processing").
+	if v, ok := h.challengeProc.Load(chalID); ok {
+		if prog, ok := v.(*challengeProgress); ok {
+			status, errType, errMsg := prog.snapshot()
+			resp["status"] = status
+			if status == "invalid" {
+				resp["error"] = acmeProblem(errType, errMsg)
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
+
+	h.startChallengeProcessing(client, order, rm.UpstreamURL, chalID)
+	resp["status"] = "processing"
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// startChallengeProcessing launches the asynchronous dns-01 challenge workflow
+// for a single challenge: deploy the TXT record via hook, wait for authoritative
+// propagation, then trigger the upstream CA's validation. It is idempotent — a
+// second call for the same challenge ID is a no-op while the first is in flight
+// or after it has recorded a terminal failure.
+func (h *Handler) startChallengeProcessing(client *upstream.Client, order *model.Order, upstreamChallengeURL, chalID string) {
+	prog, started := h.beginChallengeProc(chalID)
+	if !started {
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		h.log.Info("dns-01 challenge processing started",
+			"challenge_id", chalID,
+			"order_id", order.ID,
+			"upstream_id", order.UpstreamID,
+			"upstream_challenge_url", upstreamChallengeURL,
+		)
+
+		// Deploy failures are fatal: without the record the CA cannot validate.
+		// Propagation-timeout is non-fatal inside prepareDNS01Challenge (it logs
+		// and proceeds), so reaching here means the record was published.
+		if err := h.prepareDNS01Challenge(ctx, order, client, upstreamChallengeURL); err != nil {
+			h.log.Error("dns-01 challenge preparation failed",
+				"challenge_id", chalID, "order_id", order.ID, "upstream_id", order.UpstreamID, "error", err)
+			prog.fail("dns", "failed to provision dns-01 challenge record: "+err.Error())
+			return
+		}
+
+		h.log.Info("triggering upstream challenge",
+			"challenge_id", chalID, "order_id", order.ID, "upstream_id", order.UpstreamID,
+			"upstream_challenge_url", upstreamChallengeURL)
+
+		chal, err := client.TriggerChallenge(ctx, upstreamChallengeURL)
+		if err != nil {
+			h.log.Error("triggering upstream challenge failed",
+				"challenge_id", chalID, "order_id", order.ID, "upstream_id", order.UpstreamID, "error", err)
+			prog.fail("serverInternal", "failed to trigger upstream challenge: "+err.Error())
+			return
+		}
+
+		h.log.Info("upstream challenge triggered",
+			"challenge_id", chalID, "order_id", order.ID, "upstream_id", order.UpstreamID,
+			"challenge_type", chal.Type, "challenge_status", chal.Status)
+
+		// The upstream challenge is now triggered; subsequent authz polls reflect
+		// the authoritative live status, so the local processing record can go.
+		h.challengeProc.Delete(chalID)
+	}()
 }
 
 // ─── POST /finalize/{id} ──────────────────────────────────────────────────────
@@ -1218,8 +1382,27 @@ func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order,
 			if err := h.runDNSHookScript(ctx, hook.DeployScript, target, dnsValue, ch.Token); err != nil {
 				return err
 			}
+			// Propagation is best-effort: the record is published, so when quorum
+			// is not reached we log and proceed to trigger the upstream rather than
+			// fail the whole challenge. Hard-failing would never succeed against an
+			// authoritative set that does not converge to the configured quorum
+			// (e.g. a CA whose nameservers chronically lag). A deploy *error* above
+			// is still fatal because the record was never published.
+			//
+			// Context cancellation is the exception: if the processing context is
+			// canceled or has hit its deadline (shutdown, or the background
+			// processing timeout), triggering the upstream now would reuse the same
+			// dead context and fail anyway, so abort and surface the failure.
 			if err := h.waitForDNSPropagation(ctx, hook, target.EffectiveFQDN, dnsValue); err != nil {
-				return err
+				if ctx.Err() != nil {
+					return fmt.Errorf("dns-01 propagation aborted: %w", err)
+				}
+				h.log.Warn("dns-01 propagation did not reach quorum; triggering upstream anyway",
+					"order_id", order.ID,
+					"upstream_id", order.UpstreamID,
+					"fqdn", target.EffectiveFQDN,
+					"error", err,
+				)
 			}
 
 			if hook.CleanupScript != "" {

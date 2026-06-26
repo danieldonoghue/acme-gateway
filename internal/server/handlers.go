@@ -46,16 +46,28 @@ type Handler struct {
 	// (a retried POST does not re-deploy or re-trigger) and lets the authz poll
 	// surface a gateway-side failure that occurs before the upstream challenge
 	// is triggered. Entries are removed once the upstream challenge is triggered
-	// (after which the live upstream status is authoritative); failed entries
-	// are retained so the failure remains visible to subsequent polls.
+	// (after which the live upstream status is authoritative); entries left
+	// behind by a pre-trigger failure are reclaimed after challengeProcRetention
+	// so the map cannot grow without bound.
 	challengeProc sync.Map // map[string]*challengeProgress
 }
+
+// challengeProcRetention bounds how long a challenge processing record is kept
+// after creation. Successful records are deleted as soon as the upstream is
+// triggered; this retention reclaims records left behind by pre-trigger
+// failures. It comfortably exceeds an order's lifetime, so a failure stays
+// visible on the authz poll for as long as a client would still be polling.
+const challengeProcRetention = time.Hour
 
 // challengeProgress records the state of background dns-01 challenge processing
 // for a single challenge. status is "processing" while the gateway deploys the
 // record and triggers the upstream, or "invalid" if a gateway-side step failed
 // before the upstream challenge could be triggered.
 type challengeProgress struct {
+	// createdAt is set once at construction (before the value is published to
+	// the map) and never mutated, so it is read without holding mu.
+	createdAt time.Time
+
 	mu      sync.Mutex
 	status  string
 	errType string
@@ -81,7 +93,9 @@ func (p *challengeProgress) fail(errType, errMsg string) {
 // background work — false when processing is already in flight or a terminal
 // failure has already been recorded, which keeps answer-challenge idempotent.
 func (h *Handler) beginChallengeProc(chalID string) (*challengeProgress, bool) {
-	prog := &challengeProgress{status: "processing"}
+	now := time.Now()
+	h.evictStaleChallengeProc(now)
+	prog := &challengeProgress{status: "processing", createdAt: now}
 	if actual, loaded := h.challengeProc.LoadOrStore(chalID, prog); loaded {
 		if existing, ok := actual.(*challengeProgress); ok {
 			return existing, false
@@ -90,6 +104,19 @@ func (h *Handler) beginChallengeProc(chalID string) (*challengeProgress, bool) {
 		return prog, false
 	}
 	return prog, true
+}
+
+// evictStaleChallengeProc removes challenge processing records older than the
+// retention window. It runs opportunistically when a new challenge begins, so
+// map growth is bounded by the rate of recent challenges rather than by the
+// cumulative count of past (especially failed) ones.
+func (h *Handler) evictStaleChallengeProc(now time.Time) {
+	h.challengeProc.Range(func(key, value any) bool {
+		if prog, ok := value.(*challengeProgress); ok && now.Sub(prog.createdAt) > challengeProcRetention {
+			h.challengeProc.Delete(key)
+		}
+		return true
+	})
 }
 
 // acmeProblem builds an RFC 8555 problem document for a gateway-side challenge
@@ -1355,13 +1382,21 @@ func (h *Handler) prepareDNS01Challenge(ctx context.Context, order *model.Order,
 			if err := h.runDNSHookScript(ctx, hook.DeployScript, target, dnsValue, ch.Token); err != nil {
 				return err
 			}
-			// Propagation is best-effort: the record is published, so on a quorum
-			// timeout we log and proceed to trigger the upstream rather than fail
-			// the whole challenge. Hard-failing here would never succeed against an
+			// Propagation is best-effort: the record is published, so when quorum
+			// is not reached we log and proceed to trigger the upstream rather than
+			// fail the whole challenge. Hard-failing would never succeed against an
 			// authoritative set that does not converge to the configured quorum
 			// (e.g. a CA whose nameservers chronically lag). A deploy *error* above
 			// is still fatal because the record was never published.
+			//
+			// Context cancellation is the exception: if the processing context is
+			// canceled or has hit its deadline (shutdown, or the background
+			// processing timeout), triggering the upstream now would reuse the same
+			// dead context and fail anyway, so abort and surface the failure.
 			if err := h.waitForDNSPropagation(ctx, hook, target.EffectiveFQDN, dnsValue); err != nil {
+				if ctx.Err() != nil {
+					return fmt.Errorf("dns-01 propagation aborted: %w", err)
+				}
 				h.log.Warn("dns-01 propagation did not reach quorum; triggering upstream anyway",
 					"order_id", order.ID,
 					"upstream_id", order.UpstreamID,

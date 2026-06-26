@@ -55,7 +55,10 @@ matches real anycast behavior, where a validator is likely to hit a converged
 node even when 100% local quorum is never observed.
 
 A deploy-hook **error** (the record was never published) remains fatal and
-fails the challenge — there is nothing for the CA to validate.
+fails the challenge — there is nothing for the CA to validate. Context
+cancellation (process shutdown, or the background processing deadline) is also
+fatal: triggering the upstream with a dead context would fail anyway, so the
+challenge is aborted rather than proceeding.
 
 This supersedes ADR 0007's statement that the gateway "requires quorum and
 stability before proceeding." It now *prefers* quorum and proceeds on timeout.
@@ -74,6 +77,9 @@ stability before proceeding." It now *prefers* quorum and proceeds on timeout.
   are unchanged.
 - Gateway-side pre-trigger failures are tracked in memory keyed by challenge ID
   to keep answer-challenge idempotent and to surface failures on the authz poll.
+  Successful records are deleted as soon as the upstream is triggered; records
+  left by a pre-trigger failure are evicted after a retention window (longer than
+  an order's lifetime) so the tracking map cannot grow without bound.
 
 ## Alternatives considered
 

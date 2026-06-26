@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestChallengeProgress_DefaultAndFail(t *testing.T) {
@@ -108,6 +109,36 @@ func TestBeginChallengeProc_RaceSingleStarter(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("started count = %d, want exactly 1", got)
+	}
+}
+
+func TestBeginChallengeProc_EvictsStaleEntries(t *testing.T) {
+	h := &Handler{}
+
+	// A failed record older than the retention window must be reclaimed; a
+	// recent one must survive.
+	h.challengeProc.Store("stale", &challengeProgress{
+		status:    "invalid",
+		createdAt: time.Now().Add(-challengeProcRetention - time.Minute),
+	})
+	h.challengeProc.Store("fresh", &challengeProgress{
+		status:    "invalid",
+		createdAt: time.Now(),
+	})
+
+	// Starting a new challenge triggers the opportunistic sweep.
+	if _, started := h.beginChallengeProc("new"); !started {
+		t.Fatal("new challenge should report started=true")
+	}
+
+	if _, ok := h.challengeProc.Load("stale"); ok {
+		t.Fatal("stale entry should have been evicted")
+	}
+	if _, ok := h.challengeProc.Load("fresh"); !ok {
+		t.Fatal("fresh entry should have been retained")
+	}
+	if _, ok := h.challengeProc.Load("new"); !ok {
+		t.Fatal("newly started entry should be present")
 	}
 }
 

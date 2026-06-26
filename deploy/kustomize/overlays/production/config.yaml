@@ -41,6 +41,11 @@ upstreams:
     # dns_hook:
     #   deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
     #   cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
+    #   # Background propagation check; non-fatal on timeout (triggers upstream
+    #   # anyway). Lower quorum_percent for CAs whose anycast NS converge unevenly.
+    #   propagation:
+    #     quorum_percent: 80
+    #     timeout_seconds: 120
 
   # Example: private CA with EAB authentication.
   # Uncomment and populate once the acme-gateway-eab Secret exists.

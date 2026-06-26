@@ -37,7 +37,9 @@ bootstrap:
   dns_hook:
     deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
     cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
-    # Optional authoritative propagation gate before triggering upstream dns-01.
+    # Optional authoritative-propagation check (background; non-fatal on timeout).
+    # See the upstream dns_hook below and docs/decisions/0008 for details. Lower
+    # quorum_percent (e.g. 80) for CAs whose anycast nameservers converge unevenly.
     propagation:
       enabled: true
       timeout_seconds: 300
@@ -78,11 +80,21 @@ upstreams:
     dns_hook:
       deploy_script:  "/etc/acme-gateway/hooks.d/deploy-dns.sh"
       cleanup_script: "/etc/acme-gateway/hooks.d/cleanup-dns.sh"
+      # Authoritative-propagation check. Answer-challenge returns immediately;
+      # this wait runs in the background before the gateway triggers the upstream
+      # (see docs/decisions/0008). The timeout is non-fatal — the TXT record is
+      # already published, so on timeout the gateway triggers the upstream anyway;
+      # only a deploy-hook *error* fails the challenge.
       propagation:
         enabled: true
         timeout_seconds: 300
         poll_seconds: 2
         min_consecutive_successes: 3
+        # quorum_percent: percentage of authoritative nameservers that must serve
+        # the TXT before triggering. Default 100. For CAs whose anycast NS converge
+        # unevenly (one node may lag indefinitely), set below 100 — e.g. 80 for a
+        # 4-of-5 set — so the background worker triggers promptly instead of waiting
+        # out the full timeout_seconds.
         quorum_percent: 100
       delegation:
         enabled: false

@@ -83,9 +83,13 @@ Preferred implementation: use the standalone hooks repository at [danieldonoghue
   - `ACME_GATEWAY_DOMAIN_SOURCE`, `ACME_GATEWAY_DOMAIN_EFFECTIVE`
   - `ACME_GATEWAY_FQDN_SOURCE`, `ACME_GATEWAY_FQDN_EFFECTIVE`
 
+Answer-challenge is non-blocking: `POST /challenge/{id}` returns immediately with the challenge in `processing` (RFC 8555 §7.1.6) while the gateway publishes the TXT record, waits for propagation, and triggers the upstream CA in the background. The ACME client observes progress by polling the authorization, exactly as it already does. See [docs/decisions/0008-asynchronous-answer-challenge-processing.md](docs/decisions/0008-asynchronous-answer-challenge-processing.md).
+
 dns-01 hardening options (per hook):
-- `propagation`: authoritative nameserver quorum check before triggering upstream challenge.
+- `propagation`: authoritative nameserver quorum check, run in the background before the gateway triggers the upstream challenge.
   - Defaults: enabled, `timeout_seconds=300`, `poll_seconds=2`, `min_consecutive_successes=3`, `quorum_percent=100`.
+  - The timeout is **non-fatal**: the TXT record is already published, so on a quorum timeout the gateway logs a warning and triggers the upstream anyway. A deploy-hook error (record never published) still fails the challenge.
+  - For CAs whose anycast authoritative nameservers converge unevenly (a single node may lag indefinitely), set `quorum_percent` below 100 — e.g. `80` for a 4-of-5 set — and/or a shorter `timeout_seconds` so the background worker triggers promptly instead of waiting out the full timeout.
 - `delegation`: optional CNAME delegation support for `_acme-challenge.<domain>`.
   - When enabled and a CNAME exists, publish/check/cleanup use the delegated effective FQDN.
   - `allowed_zone_suffixes` is optional. If unset or empty, any delegated zone is accepted.
@@ -96,6 +100,7 @@ Why this exists: with account-bound upstream routing, upstream CAs validate TXT 
 Details:
 - Architecture and decision rationale: [docs/decisions/0005-gateway-managed-dns01-hooks.md](docs/decisions/0005-gateway-managed-dns01-hooks.md)
 - Propagation/delegation hardening: [docs/decisions/0007-authoritative-propagation-and-dns01-delegation.md](docs/decisions/0007-authoritative-propagation-and-dns01-delegation.md)
+- Non-blocking answer-challenge + best-effort propagation: [docs/decisions/0008-asynchronous-answer-challenge-processing.md](docs/decisions/0008-asynchronous-answer-challenge-processing.md)
 - Product limitation decision: [docs/decisions/0006-single-dns-provider-per-upstream.md](docs/decisions/0006-single-dns-provider-per-upstream.md)
 - Preferred compiled hooks: [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks)
 - Legacy shell templates: [packaging/hooks.d/examples](packaging/hooks.d/examples)

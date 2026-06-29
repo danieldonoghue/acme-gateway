@@ -36,4 +36,12 @@ func TestValidateDelegatedTarget(t *testing.T) {
 	if err := validateDelegatedTarget("_acme-challenge.foo.delegate.example", []string{"other.example"}); err == nil {
 		t.Fatal("expected error for non-matching suffix")
 	}
+	// A configured suffix may be written with a leading dot; it must still match.
+	if err := validateDelegatedTarget("foo.acme.example", []string{".acme.example"}); err != nil {
+		t.Fatalf("expected leading-dot suffix to match, got %v", err)
+	}
+	// The zone apex itself matches (target == suffix).
+	if err := validateDelegatedTarget("acme.example", []string{"acme.example"}); err != nil {
+		t.Fatalf("expected apex to match its own suffix, got %v", err)
+	}
 }

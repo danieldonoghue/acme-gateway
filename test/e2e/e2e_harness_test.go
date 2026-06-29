@@ -331,6 +331,23 @@ func newStagingHarness(t *testing.T) *harness {
 		settleSeconds = n
 	}
 
+	// Optional CNAME delegation. When EXCEDO_DNS_ZONE is set, the dns hook
+	// publishes challenge TXTs into that dedicated zone, so the gateway must
+	// follow the _acme-challenge.<domain> CNAME to the delegated target. The
+	// excedo hook reads EXCEDO_DNS_ZONE itself from the inherited environment;
+	// here we just enable the gateway-side delegation resolution. Unset = off
+	// (records published at _acme-challenge.<domain> in the source zone).
+	var delegation config.DNSDelegationPolicy
+	if zone := strings.TrimSuffix(strings.TrimSpace(os.Getenv("EXCEDO_DNS_ZONE")), "."); zone != "" {
+		enabled := true
+		delegation = config.DNSDelegationPolicy{
+			Enabled:             &enabled,
+			Mode:                "strict",
+			AllowedZoneSuffixes: []string{zone}, // no leading dot; matcher adds it
+		}
+		t.Logf("dns-01 delegation enabled for e2e: zone=%s", zone)
+	}
+
 	return newHarnessWithConfig(t, func(cfg *config.Config) {
 		cfg.Upstreams = map[string]config.UpstreamConfig{
 			"le-staging": {
@@ -342,6 +359,7 @@ func newStagingHarness(t *testing.T) *harness {
 					Propagation: config.DNSPropagationPolicy{
 						SettleSeconds: settleSeconds,
 					},
+					Delegation: delegation,
 				},
 			},
 		}

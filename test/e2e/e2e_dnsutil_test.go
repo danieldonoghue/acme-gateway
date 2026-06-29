@@ -110,11 +110,40 @@ func waitForAuthoritativeTXT(fqdn, want string, timeout, interval time.Duration)
 	return fmt.Errorf("authoritative TXT propagation timeout after %s for %s", timeout, fqdn)
 }
 
+// cnameTarget returns the CNAME target of fqdn (no trailing dot), or "" if fqdn
+// is not a CNAME. Used to follow acme-dns-style dns-01 delegation to the zone
+// where the challenge TXT actually lives. Best-effort via `dig`; on any failure
+// it returns "" so callers fall back to the original name.
+func cnameTarget(fqdn string) string {
+	name := strings.TrimSuffix(strings.TrimSpace(fqdn), ".")
+	out, err := exec.Command("dig", "+short", name, "CNAME").Output()
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = strings.TrimSpace(line[:i])
+	}
+	target := strings.TrimSuffix(line, ".")
+	if target == "" || strings.EqualFold(target, name) {
+		return ""
+	}
+	return target
+}
+
 func waitForTXTRecord(t *testing.T, fqdn, want string) bool {
 	t.Helper()
 
 	timeout := envDurationSeconds("ACME_E2E_DNS_TIMEOUT_SECONDS", 300)
 	interval := envDurationSeconds("ACME_E2E_DNS_POLL_SECONDS", 5)
+
+	// If the challenge name is CNAME-delegated (acme-dns style), the TXT lives at
+	// the delegated target, not at _acme-challenge.<domain>. Follow it so NS
+	// discovery and the TXT checks hit the right zone — exactly what the CA does.
+	if target := cnameTarget(fqdn); target != "" {
+		testLogf(t, "test", "%s is CNAME-delegated -> %s; verifying TXT at the delegated target", fqdn, target)
+		fqdn = target
+	}
 
 	nsHosts, nsErr := authoritativeNameservers(fqdn)
 	if nsErr != nil {

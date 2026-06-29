@@ -16,6 +16,7 @@ import (
 
 	legocrypto "github.com/go-acme/lego/v4/certcrypto"
 	legocert "github.com/go-acme/lego/v4/certificate"
+	legodns01 "github.com/go-acme/lego/v4/challenge/dns01"
 	legoapi "github.com/go-acme/lego/v4/lego"
 	legoreg "github.com/go-acme/lego/v4/registration"
 )
@@ -153,13 +154,11 @@ func TestStagingLELegoViaGateway(t *testing.T) {
 		t.Fatal("ACME_E2E_EMAIL must be set when running staging tests")
 	}
 
+	// The gateway (configured by newStagingHarness from ACME_E2E_DNS_PRESENT_CMD/
+	// _CLEANUP_CMD) owns dns-01 provisioning via its own dns_hook. lego, standing
+	// in for the production client, performs no DNS work — see the no-op provider
+	// below.
 	h := newStagingHarness(t)
-
-	presentCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_PRESENT_CMD"))
-	if presentCmd == "" {
-		t.Fatal("ACME_E2E_DNS_PRESENT_CMD must be set when running staging lego test")
-	}
-	cleanupCmd := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_CLEANUP_CMD"))
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -176,7 +175,19 @@ func TestStagingLELegoViaGateway(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lego client creation failed: %v", err)
 	}
-	if err := legoClient.Challenge.SetDNS01Provider(&commandDNSProvider{presentCmd: presentCmd, cleanupCmd: cleanupCmd}); err != nil {
+	// Model the production client exactly as certbot will run from now on:
+	//   certbot --authenticator manual --preferred-challenges dns \
+	//           --manual-auth-hook /bin/true --manual-cleanup-hook /bin/true
+	// The client publishes no TXT and runs no DNS self-check; it answers the
+	// challenge and lets the gateway publish the authoritative record and validate
+	// upstream. WrapPreCheck short-circuits lego's built-in propagation wait (the
+	// certbot manual plugin has no equivalent), and noopDNSProvider publishes
+	// nothing — eliminating the dual-writer race where the client's own TXT could
+	// be served to the CA by a lagging anycast node.
+	skipDNSPreCheck := legodns01.WrapPreCheck(func(_, _, _ string, _ legodns01.PreCheckFunc) (bool, error) {
+		return true, nil
+	})
+	if err := legoClient.Challenge.SetDNS01Provider(&noopDNSProvider{}, skipDNSPreCheck); err != nil {
 		t.Fatalf("lego dns provider setup failed: %v", err)
 	}
 

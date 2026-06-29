@@ -42,6 +42,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -315,6 +316,21 @@ func newStagingHarness(t *testing.T) *harness {
 		cleanupWrapper = writeDNSHookWrapper(t, cleanupCmd, "cleanup")
 	}
 
+	// Mirror the production settle delay: after the gateway's authoritative
+	// quorum is reached, wait before triggering the CA so lagging anycast nodes
+	// (which the CA's resolver may hit) have time to converge. The parent zone
+	// converges slowly, so without this the gateway triggers the CA the instant
+	// it sees its own record and validation can hit a node that is still behind
+	// (transient NXDOMAIN). Override with ACME_E2E_DNS_SETTLE_SECONDS.
+	settleSeconds := 20
+	if v := strings.TrimSpace(os.Getenv("ACME_E2E_DNS_SETTLE_SECONDS")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			t.Fatalf("invalid ACME_E2E_DNS_SETTLE_SECONDS=%q: want a non-negative integer", v)
+		}
+		settleSeconds = n
+	}
+
 	return newHarnessWithConfig(t, func(cfg *config.Config) {
 		cfg.Upstreams = map[string]config.UpstreamConfig{
 			"le-staging": {
@@ -323,6 +339,9 @@ func newStagingHarness(t *testing.T) *harness {
 				DNSHook: config.DNSHook{
 					DeployScript:  presentWrapper,
 					CleanupScript: cleanupWrapper,
+					Propagation: config.DNSPropagationPolicy{
+						SettleSeconds: settleSeconds,
+					},
 				},
 			},
 		}

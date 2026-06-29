@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeTemp(t *testing.T, content string) string {
@@ -739,5 +740,25 @@ routing:
 	_, err := Load(path)
 	if err != nil {
 		t.Fatalf("expected config to load with no allowed_zone_suffixes list, got: %v", err)
+	}
+}
+
+func TestDNSPropagation_SettleDelayOrDefault(t *testing.T) {
+	cases := []struct {
+		name    string
+		seconds int
+		want    time.Duration
+	}{
+		{"unset defaults to zero", 0, 0},
+		{"negative clamps to zero", -5, 0},
+		{"configured value honoured", 20, 20 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := DNSPropagationPolicy{SettleSeconds: tc.seconds}
+			if got := p.SettleDelayOrDefault(); got != tc.want {
+				t.Errorf("SettleDelayOrDefault() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

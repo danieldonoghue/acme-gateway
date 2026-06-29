@@ -184,17 +184,45 @@ func (h *Handler) waitForDNSPropagation(ctx context.Context, hook config.DNSHook
 				"stable_nameservers", stable,
 				"required_quorum", required,
 			)
-			return nil
+			return h.settleAfterQuorum(ctx, hook, fqdn)
 		}
 
+		timer := time.NewTimer(poll)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("dns propagation wait canceled: %w", ctx.Err())
-		case <-time.After(poll):
+		case <-timer.C:
 		}
 	}
 
 	return fmt.Errorf("dns propagation timeout for %q after %s", fqdn, timeout)
+}
+
+// settleAfterQuorum applies the optional post-quorum settle delay. Once the
+// authoritative nameservers report the record, some providers still perform an
+// additional intra-zone transfer between anycast nodes; the CA may otherwise
+// validate against a node that is briefly behind. The delay defaults to 0, so
+// providers that converge atomically are unaffected. The wait is interruptible:
+// if the processing context is canceled (shutdown or deadline), it returns that
+// error so the caller can abort rather than trigger the upstream on a dead ctx.
+func (h *Handler) settleAfterQuorum(ctx context.Context, hook config.DNSHook, fqdn string) error {
+	settle := hook.Propagation.SettleDelayOrDefault()
+	if settle <= 0 {
+		return nil
+	}
+	h.log.Info("dns-01 propagation settle delay started",
+		"fqdn", fqdn,
+		"settle_seconds", int(settle.Seconds()),
+	)
+	timer := time.NewTimer(settle)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("dns propagation settle canceled: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
 }
 
 func authoritativeNameservers(ctx context.Context, fqdn string) ([]string, error) {

@@ -96,6 +96,13 @@ upstreams:
         # 4-of-5 set — so the background worker triggers promptly instead of waiting
         # out the full timeout_seconds.
         quorum_percent: 100
+        # settle_seconds: optional fixed delay applied AFTER quorum is reached and
+        # BEFORE the upstream CA is triggered. Default 0 (no extra wait). Some
+        # anycast providers perform an additional intra-zone transfer between nodes
+        # after the record is visible on the authoritative servers; a short settle
+        # (e.g. 20) absorbs that window so the CA does not validate against a node
+        # that is briefly behind. Most providers do not need this — leave unset.
+        # settle_seconds: 20
       delegation:
         enabled: false
         mode: strict # strict|permissive

@@ -107,6 +107,12 @@ CREATE TABLE IF NOT EXISTS resource_map (
 -- therefore on (order_id, upstream_url), not upstream_url alone.
 CREATE UNIQUE INDEX IF NOT EXISTS resource_map_order_upstream_url ON resource_map(order_id, upstream_url);
 
+-- The composite index above has order_id as its leftmost column, so it does not
+-- serve lookups that filter on upstream_url alone (GetResourceByUpstreamURL,
+-- used for finalize/certificate URLs that Let's Encrypt mints uniquely per
+-- order). Keep those reads index-backed with a dedicated non-unique index.
+CREATE INDEX IF NOT EXISTS resource_map_upstream_url_lookup ON resource_map(upstream_url);
+
 CREATE TABLE IF NOT EXISTS nonces (
   nonce      TEXT PRIMARY KEY,
   expires_at TEXT NOT NULL

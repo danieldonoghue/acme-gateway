@@ -83,6 +83,14 @@ type DNSPropagationPolicy struct {
 	MinConsecutiveSuccesses int `yaml:"min_consecutive_successes,omitempty"`
 	// QuorumPercent defaults to 100 when omitted or <= 0.
 	QuorumPercent int `yaml:"quorum_percent,omitempty"`
+	// SettleSeconds is an optional fixed delay applied *after* the authoritative
+	// quorum is reached and *before* the upstream CA is triggered. Defaults to 0
+	// (no extra wait). Some providers (e.g. Excedo anycast) perform an additional
+	// intra-zone transfer between nodes after the record is visible on the
+	// authoritative servers; a short settle absorbs that window so the CA does not
+	// validate against a node that is briefly behind. Most providers do not need
+	// it — leave unset.
+	SettleSeconds int `yaml:"settle_seconds,omitempty"`
 }
 
 // EnabledOrDefault reports whether propagation checks are enabled.
@@ -127,6 +135,15 @@ func (p DNSPropagationPolicy) QuorumPercentOrDefault() int {
 		v = 100
 	}
 	return v
+}
+
+// SettleDelayOrDefault returns the post-quorum settle delay. Defaults to 0
+// (no extra wait) when unset or negative.
+func (p DNSPropagationPolicy) SettleDelayOrDefault() time.Duration {
+	if p.SettleSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(p.SettleSeconds) * time.Second
 }
 
 // DNSDelegationPolicy controls optional CNAME delegation handling for dns-01.

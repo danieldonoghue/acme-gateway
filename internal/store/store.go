@@ -101,7 +101,11 @@ CREATE TABLE IF NOT EXISTS resource_map (
   FOREIGN KEY (order_id) REFERENCES orders(id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS resource_map_upstream_url ON resource_map(upstream_url);
+-- Resource mappings are scoped to their order: an upstream URL (notably a
+-- reused/valid authorization that Let's Encrypt returns across several orders)
+-- may legitimately map to a distinct gateway_id under each order. Uniqueness is
+-- therefore on (order_id, upstream_url), not upstream_url alone.
+CREATE UNIQUE INDEX IF NOT EXISTS resource_map_order_upstream_url ON resource_map(order_id, upstream_url);
 
 CREATE TABLE IF NOT EXISTS nonces (
   nonce      TEXT PRIMARY KEY,
@@ -116,6 +120,13 @@ func (s *Store) migrate() error {
 	// Idempotent column additions for databases predating this schema version.
 	s.db.ExecContext(context.Background(), `ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`)              //nolint:errcheck,gosec
 	s.db.ExecContext(context.Background(), `ALTER TABLE orders ADD COLUMN upstream_slot INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck,gosec
+	// Replace the legacy global-unique index on resource_map(upstream_url) with the
+	// order-scoped composite index. The old index would otherwise keep enforcing
+	// global uniqueness and reject a second order that reuses an upstream
+	// authorization URL. Existing rows are safe to re-index: under the old index
+	// each upstream_url appeared at most once, so no (order_id, upstream_url)
+	// duplicates can exist.
+	s.db.ExecContext(context.Background(), `DROP INDEX IF EXISTS resource_map_upstream_url`) //nolint:errcheck,gosec
 	// Migrate upstream_accounts from single-PK to composite (upstream_id, slot) PK.
 	// Detect the old schema by checking whether the slot column exists.
 	var slotExists int

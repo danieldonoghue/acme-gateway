@@ -682,7 +682,7 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 	rewrittenChallenges := make([]interface{}, len(upAuthz.Challenges))
 	authzFailed := false
 	for i, chal := range upAuthz.Challenges {
-		rm, err := h.store.GetResourceByUpstreamURL(r.Context(), chal.URL)
+		rm, err := h.store.GetResourceByUpstreamURLAndOrder(r.Context(), chal.URL, order.ID)
 		if err != nil {
 			h.writeError(w, errServerInternal("checking challenge resource"))
 			return
@@ -701,9 +701,11 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Re-read after INSERT OR IGNORE: if two goroutines raced on the same
-			// authz URL, the winner's UUID was persisted; always use the stored
-			// gateway_id so the returned URL resolves correctly.
-			persisted, err := h.store.GetResourceByUpstreamURL(r.Context(), chal.URL)
+			// (order, authz URL), the winner's UUID was persisted; always use the
+			// stored gateway_id so the returned URL resolves correctly. Scope by
+			// order because the upstream challenge URL may be shared across orders
+			// when Let's Encrypt reuses a valid authorization.
+			persisted, err := h.store.GetResourceByUpstreamURLAndOrder(r.Context(), chal.URL, order.ID)
 			if err != nil || persisted == nil {
 				h.writeError(w, errServerInternal("reading challenge resource"))
 				return

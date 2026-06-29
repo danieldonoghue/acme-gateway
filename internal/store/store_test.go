@@ -405,6 +405,107 @@ func TestResource_GetByUpstreamURL_NotFound(t *testing.T) {
 	}
 }
 
+// TestResource_ReusedUpstreamAuthzAcrossOrders reproduces the bug where Let's
+// Encrypt returns a still-valid authorization for a second order: the same
+// upstream authz URL must be mappable under each order with its own gateway_id,
+// and each order must resolve to its own mapping. Before the order-scoped index
+// the second order's INSERT OR IGNORE was silently dropped, leaving a dangling
+// authz URL (HTTP 404 "authorization not found").
+func TestResource_ReusedUpstreamAuthzAcrossOrders(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	saveTestOrder(t, s, "order-A", "acct-reuse")
+	saveTestOrder(t, s, "order-B", "acct-reuse") // same account, reuses the account row
+
+	const sharedAuthzURL = "https://acme.example.com/authz/reused"
+
+	first := &model.ResourceMap{
+		GatewayID: "gw-authz-A", ResourceType: model.ResourceTypeAuthz,
+		OrderID: "order-A", UpstreamURL: sharedAuthzURL,
+	}
+	second := &model.ResourceMap{
+		GatewayID: "gw-authz-B", ResourceType: model.ResourceTypeAuthz,
+		OrderID: "order-B", UpstreamURL: sharedAuthzURL,
+	}
+	if err := s.SaveResource(ctx, first); err != nil {
+		t.Fatalf("SaveResource(order-A): %v", err)
+	}
+	if err := s.SaveResource(ctx, second); err != nil {
+		t.Fatalf("SaveResource(order-B): %v", err)
+	}
+
+	// Both mappings must persist and resolve by their own gateway_id.
+	for _, want := range []*model.ResourceMap{first, second} {
+		got, err := s.GetResource(ctx, want.GatewayID)
+		if err != nil {
+			t.Fatalf("GetResource(%q): %v", want.GatewayID, err)
+		}
+		if got == nil {
+			t.Fatalf("mapping %q was dropped (the reuse bug)", want.GatewayID)
+		}
+	}
+
+	// Order-scoped lookup must return the mapping belonging to that order.
+	gotA, err := s.GetResourceByUpstreamURLAndOrder(ctx, sharedAuthzURL, "order-A")
+	if err != nil {
+		t.Fatalf("GetResourceByUpstreamURLAndOrder(order-A): %v", err)
+	}
+	if gotA == nil || gotA.GatewayID != "gw-authz-A" {
+		t.Fatalf("order-A resolved to %+v, want gw-authz-A", gotA)
+	}
+	gotB, err := s.GetResourceByUpstreamURLAndOrder(ctx, sharedAuthzURL, "order-B")
+	if err != nil {
+		t.Fatalf("GetResourceByUpstreamURLAndOrder(order-B): %v", err)
+	}
+	if gotB == nil || gotB.GatewayID != "gw-authz-B" {
+		t.Fatalf("order-B resolved to %+v, want gw-authz-B", gotB)
+	}
+
+	// Each order's authz list must contain exactly its own mapping.
+	authzA, err := s.GetAuthzResourcesByOrderID(ctx, "order-A")
+	if err != nil {
+		t.Fatalf("GetAuthzResourcesByOrderID(order-A): %v", err)
+	}
+	if len(authzA) != 1 || authzA[0].GatewayID != "gw-authz-A" {
+		t.Fatalf("order-A authz resources = %+v, want [gw-authz-A]", authzA)
+	}
+}
+
+// TestResource_DuplicateSameOrderIsIdempotent confirms the order-scoped index
+// still de-duplicates within a single order (the INSERT OR IGNORE race guard).
+func TestResource_DuplicateSameOrderIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	saveTestOrder(t, s, "order-dup", "acct-dup")
+
+	const url = "https://acme.example.com/authz/dup"
+	winner := &model.ResourceMap{
+		GatewayID: "gw-winner", ResourceType: model.ResourceTypeAuthz,
+		OrderID: "order-dup", UpstreamURL: url,
+	}
+	loser := &model.ResourceMap{
+		GatewayID: "gw-loser", ResourceType: model.ResourceTypeAuthz,
+		OrderID: "order-dup", UpstreamURL: url,
+	}
+	if err := s.SaveResource(ctx, winner); err != nil {
+		t.Fatalf("SaveResource(winner): %v", err)
+	}
+	if err := s.SaveResource(ctx, loser); err != nil {
+		t.Fatalf("SaveResource(loser) should be ignored, not error: %v", err)
+	}
+
+	got, err := s.GetResourceByUpstreamURLAndOrder(ctx, url, "order-dup")
+	if err != nil {
+		t.Fatalf("GetResourceByUpstreamURLAndOrder: %v", err)
+	}
+	if got == nil || got.GatewayID != "gw-winner" {
+		t.Fatalf("got %+v, want winner gw-winner preserved", got)
+	}
+	if loser, _ := s.GetResource(ctx, "gw-loser"); loser != nil {
+		t.Fatal("duplicate (order, url) insert should have been ignored")
+	}
+}
+
 func TestResource_CertFingerprint(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

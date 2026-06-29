@@ -30,10 +30,29 @@ func (s *Store) GetResource(ctx context.Context, gatewayID string) (*model.Resou
 
 // GetResourceByUpstreamURL retrieves a resource mapping by its upstream URL.
 // Returns nil, nil if not found.
+//
+// NOTE: upstream URLs are unique per order, not globally (see the
+// resource_map_order_upstream_url index). This lookup is therefore only safe
+// for resource types whose upstream URL is itself per-order-unique — finalize
+// and certificate URLs, which Let's Encrypt mints fresh for every order.
+// Authorization and challenge URLs can be reused across orders; resolve those
+// with GetResourceByUpstreamURLAndOrder so the correct order's mapping is hit.
 func (s *Store) GetResourceByUpstreamURL(ctx context.Context, upstreamURL string) (*model.ResourceMap, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
 		 FROM resource_map WHERE upstream_url = ?`, upstreamURL,
+	)
+	return scanResource(row)
+}
+
+// GetResourceByUpstreamURLAndOrder retrieves a resource mapping by its upstream
+// URL scoped to a specific order. This is the correct lookup for authorization
+// and challenge resources, whose upstream URLs Let's Encrypt reuses across
+// orders when an authorization is still valid. Returns nil, nil if not found.
+func (s *Store) GetResourceByUpstreamURLAndOrder(ctx context.Context, upstreamURL, orderID string) (*model.ResourceMap, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT gateway_id, resource_type, order_id, upstream_url, cert_fingerprint
+		 FROM resource_map WHERE upstream_url = ? AND order_id = ?`, upstreamURL, orderID,
 	)
 	return scanResource(row)
 }

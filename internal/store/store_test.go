@@ -469,6 +469,13 @@ func TestResource_ReusedUpstreamAuthzAcrossOrders(t *testing.T) {
 	if len(authzA) != 1 || authzA[0].GatewayID != "gw-authz-A" {
 		t.Fatalf("order-A authz resources = %+v, want [gw-authz-A]", authzA)
 	}
+	authzB, err := s.GetAuthzResourcesByOrderID(ctx, "order-B")
+	if err != nil {
+		t.Fatalf("GetAuthzResourcesByOrderID(order-B): %v", err)
+	}
+	if len(authzB) != 1 || authzB[0].GatewayID != "gw-authz-B" {
+		t.Fatalf("order-B authz resources = %+v, want [gw-authz-B]", authzB)
+	}
 }
 
 // TestResource_DuplicateSameOrderIsIdempotent confirms the order-scoped index

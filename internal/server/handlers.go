@@ -701,10 +701,10 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Re-read after INSERT OR IGNORE: if two goroutines raced on the same
-			// (order, authz URL), the winner's UUID was persisted; always use the
-			// stored gateway_id so the returned URL resolves correctly. Scope by
-			// order because the upstream challenge URL may be shared across orders
-			// when Let's Encrypt reuses a valid authorization.
+			// (order, challenge URL), the winner's UUID was persisted; always use
+			// the stored gateway_id so the returned URL resolves correctly. Scope
+			// by order because the upstream challenge URL may be shared across
+			// orders when Let's Encrypt reuses a valid authorization.
 			persisted, err := h.store.GetResourceByUpstreamURLAndOrder(r.Context(), chal.URL, order.ID)
 			if err != nil || persisted == nil {
 				h.writeError(w, errServerInternal("reading challenge resource"))

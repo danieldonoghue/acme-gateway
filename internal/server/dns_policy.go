@@ -187,10 +187,12 @@ func (h *Handler) waitForDNSPropagation(ctx context.Context, hook config.DNSHook
 			return h.settleAfterQuorum(ctx, hook, fqdn)
 		}
 
+		timer := time.NewTimer(poll)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("dns propagation wait canceled: %w", ctx.Err())
-		case <-time.After(poll):
+		case <-timer.C:
 		}
 	}
 
@@ -213,10 +215,12 @@ func (h *Handler) settleAfterQuorum(ctx context.Context, hook config.DNSHook, fq
 		"fqdn", fqdn,
 		"settle_seconds", int(settle.Seconds()),
 	)
+	timer := time.NewTimer(settle)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("dns propagation settle canceled: %w", ctx.Err())
-	case <-time.After(settle):
+	case <-timer.C:
 		return nil
 	}
 }

@@ -70,7 +70,9 @@ func validateDelegatedTarget(effectiveFQDN string, allowedSuffixes []string) err
 	}
 	trimmed := normalizeFQDN(effectiveFQDN)
 	for _, suffix := range allowedSuffixes {
-		s := normalizeFQDN(strings.TrimSpace(suffix))
+		// Accept suffixes written either as "zone.example" or ".zone.example";
+		// the leading dot is added below, so a configured one must be stripped.
+		s := strings.TrimPrefix(normalizeFQDN(strings.TrimSpace(suffix)), ".")
 		if s == "" {
 			continue
 		}

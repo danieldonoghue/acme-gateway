@@ -17,19 +17,22 @@ type Store struct {
 
 // New opens (or creates) the SQLite database at path and runs schema migrations.
 func New(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// Pragmas are set in the DSN so they apply to EVERY pooled connection. A
+	// one-off `PRAGMA busy_timeout` only configures the single connection it runs
+	// on; the rest of the pool would keep busy_timeout=0 and fail immediately with
+	// SQLITE_BUSY ("database is locked") under any concurrent access (e.g. an ACME
+	// client polling while a challenge is being processed).
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
 
-	// WAL mode: allow a small connection pool so concurrent reads proceed in
-	// parallel. Writes still serialise at the SQLite level; busy_timeout gives
-	// writers a retry budget instead of failing immediately with SQLITE_BUSY.
+	// WAL allows concurrent readers; writers serialise at the SQLite level but,
+	// with busy_timeout applied to every connection above, wait up to 5s for the
+	// lock instead of failing immediately.
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	if _, err := db.ExecContext(context.Background(), `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
-		return nil, fmt.Errorf("setting pragmas: %w", err)
-	}
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {

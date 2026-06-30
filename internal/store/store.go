@@ -11,6 +11,11 @@ import (
 	_ "modernc.org/sqlite" // register "sqlite" driver
 )
 
+// sqliteBusyTimeoutMS is the per-connection SQLite busy_timeout (milliseconds):
+// how long a writer waits for the lock before failing with SQLITE_BUSY. Set in
+// the DSN so it applies to every pooled connection.
+const sqliteBusyTimeoutMS = 5000
+
 // Store wraps the SQLite database with ACME-domain operations.
 type Store struct {
 	db *sql.DB
@@ -26,7 +31,8 @@ func New(path string) (*Store, error) {
 	// Escape the path so reserved URI characters in it (notably '?', '#', spaces)
 	// are not misparsed as the start of the query string.
 	escapedPath := (&url.URL{Path: path}).EscapedPath()
-	dsn := "file:" + escapedPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)",
+		escapedPath, sqliteBusyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)

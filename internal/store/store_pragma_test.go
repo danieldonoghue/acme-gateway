@@ -36,8 +36,8 @@ func TestBusyTimeoutOnAllConnections(t *testing.T) {
 		if err := c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
 			t.Fatalf("conn %d: reading busy_timeout: %v", i, err)
 		}
-		if busyTimeout < 1000 {
-			t.Errorf("conn %d: busy_timeout=%d, want >= 1000 (pragma not applied pool-wide)", i, busyTimeout)
+		if busyTimeout != sqliteBusyTimeoutMS {
+			t.Errorf("conn %d: busy_timeout=%d, want %d (pragma not applied pool-wide)", i, busyTimeout, sqliteBusyTimeoutMS)
 		}
 	}
 }

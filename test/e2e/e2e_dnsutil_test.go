@@ -110,21 +110,18 @@ func waitForAuthoritativeTXT(fqdn, want string, timeout, interval time.Duration)
 	return fmt.Errorf("authoritative TXT propagation timeout after %s for %s", timeout, fqdn)
 }
 
-// cnameTarget returns the CNAME target of fqdn (no trailing dot), or "" if fqdn
-// is not a CNAME. Used to follow acme-dns-style dns-01 delegation to the zone
-// where the challenge TXT actually lives. Best-effort via `dig`; on any failure
-// it returns "" so callers fall back to the original name.
+// cnameTarget returns the canonical CNAME target of fqdn (no trailing dot), or
+// "" if fqdn is not a CNAME. Used to follow acme-dns-style dns-01 delegation to
+// the zone where the challenge TXT actually lives. Uses the Go resolver (no
+// external dig dependency) and follows the full CNAME chain; on any failure it
+// returns "" so callers fall back to the original name.
 func cnameTarget(fqdn string) string {
 	name := strings.TrimSuffix(strings.TrimSpace(fqdn), ".")
-	out, err := exec.Command("dig", "+short", name, "CNAME").Output()
+	cname, err := net.LookupCNAME(name)
 	if err != nil {
 		return ""
 	}
-	line := strings.TrimSpace(string(out))
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = strings.TrimSpace(line[:i])
-	}
-	target := strings.TrimSuffix(line, ".")
+	target := strings.TrimSuffix(cname, ".")
 	if target == "" || strings.EqualFold(target, name) {
 		return ""
 	}

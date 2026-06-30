@@ -338,7 +338,7 @@ func newStagingHarness(t *testing.T) *harness {
 	// here we just enable the gateway-side delegation resolution. Unset = off
 	// (records published at _acme-challenge.<domain> in the source zone).
 	var delegation config.DNSDelegationPolicy
-	if zone := strings.TrimSuffix(strings.TrimSpace(os.Getenv("EXCEDO_DNS_ZONE")), "."); zone != "" {
+	if zone := strings.Trim(strings.TrimSpace(os.Getenv("EXCEDO_DNS_ZONE")), "."); zone != "" {
 		enabled := true
 		delegation = config.DNSDelegationPolicy{
 			Enabled:             &enabled,

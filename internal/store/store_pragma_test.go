@@ -27,6 +27,7 @@ func TestBusyTimeoutOnAllConnections(t *testing.T) {
 		if err != nil {
 			t.Fatalf("opening connection %d: %v", i, err)
 		}
+		t.Cleanup(func() { _ = c.Close() }) // released even if a later check fails
 		conns = append(conns, c)
 	}
 
@@ -38,6 +39,5 @@ func TestBusyTimeoutOnAllConnections(t *testing.T) {
 		if busyTimeout < 1000 {
 			t.Errorf("conn %d: busy_timeout=%d, want >= 1000 (pragma not applied pool-wide)", i, busyTimeout)
 		}
-		_ = c.Close()
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"time"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver
@@ -22,7 +23,10 @@ func New(path string) (*Store, error) {
 	// on; the rest of the pool would keep busy_timeout=0 and fail immediately with
 	// SQLITE_BUSY ("database is locked") under any concurrent access (e.g. an ACME
 	// client polling while a challenge is being processed).
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	// Escape the path so reserved URI characters in it (notably '?', '#', spaces)
+	// are not misparsed as the start of the query string.
+	escapedPath := (&url.URL{Path: path}).EscapedPath()
+	dsn := "file:" + escapedPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)

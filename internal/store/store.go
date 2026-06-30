@@ -5,10 +5,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"time"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver
 )
+
+// sqliteBusyTimeoutMS is the per-connection SQLite busy_timeout (milliseconds):
+// how long a writer waits for the lock before failing with SQLITE_BUSY. Set in
+// the DSN so it applies to every pooled connection.
+const sqliteBusyTimeoutMS = 5000
 
 // Store wraps the SQLite database with ACME-domain operations.
 type Store struct {
@@ -17,19 +23,26 @@ type Store struct {
 
 // New opens (or creates) the SQLite database at path and runs schema migrations.
 func New(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// Pragmas are set in the DSN so they apply to EVERY pooled connection. A
+	// one-off `PRAGMA busy_timeout` only configures the single connection it runs
+	// on; the rest of the pool would keep busy_timeout=0 and fail immediately with
+	// SQLITE_BUSY ("database is locked") under any concurrent access (e.g. an ACME
+	// client polling while a challenge is being processed).
+	// Escape the path so reserved URI characters in it (notably '?', '#', spaces)
+	// are not misparsed as the start of the query string.
+	escapedPath := (&url.URL{Path: path}).EscapedPath()
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)",
+		escapedPath, sqliteBusyTimeoutMS)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
 
-	// WAL mode: allow a small connection pool so concurrent reads proceed in
-	// parallel. Writes still serialise at the SQLite level; busy_timeout gives
-	// writers a retry budget instead of failing immediately with SQLITE_BUSY.
+	// WAL allows concurrent readers; writers serialise at the SQLite level but,
+	// with busy_timeout applied to every connection above, wait up to 5s for the
+	// lock instead of failing immediately.
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	if _, err := db.ExecContext(context.Background(), `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
-		return nil, fmt.Errorf("setting pragmas: %w", err)
-	}
 
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {

@@ -6,7 +6,7 @@ description: >
   rules (profile, key type, domain suffix).
 type: application
 version: 0.1.0
-appVersion: "v0.0.8"
+appVersion: "v0.0.9"
 keywords:
   - acme
   - certificate

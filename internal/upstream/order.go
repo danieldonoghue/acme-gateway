@@ -7,7 +7,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 )
+
+// CertificateFetchResult contains the fetched PEM chain and any alternate
+// certificate URLs advertised by the upstream in Link headers.
+type CertificateFetchResult struct {
+	Chain             []byte
+	AlternateCertURLs []string
+}
 
 // NewOrderRequest is the payload for POST /newOrder.
 type NewOrderRequest struct {
@@ -135,6 +144,16 @@ func (c *Client) FinalizeOrder(ctx context.Context, finalizeURL string, csrDER [
 // RFC 8555 §7.4.2: certificate download uses POST-as-GET (nil payload).
 // The Accept header requests PEM format; some CAs serve multiple representations.
 func (c *Client) FetchCertificate(ctx context.Context, certURL string) ([]byte, error) {
+	result, err := c.FetchCertificateWithAlternates(ctx, certURL)
+	if err != nil {
+		return nil, err
+	}
+	return result.Chain, nil
+}
+
+// FetchCertificateWithAlternates downloads the PEM certificate chain and parses
+// Link rel="alternate" headers into absolute certificate URLs.
+func (c *Client) FetchCertificateWithAlternates(ctx context.Context, certURL string) (*CertificateFetchResult, error) {
 	resp, err := c.signedPostWithHeaders(ctx, certURL, nil, map[string]string{
 		"Accept": "application/pem-certificate-chain",
 	})
@@ -147,7 +166,106 @@ func (c *Client) FetchCertificate(ctx context.Context, certURL string) ([]byte, 
 		return nil, parseACMEError(resp)
 	}
 
-	return io.ReadAll(resp.Body)
+	chain, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CertificateFetchResult{
+		Chain:             chain,
+		AlternateCertURLs: parseAlternateCertLinks(resp.Header.Values("Link"), certURL),
+	}, nil
+}
+
+// parseAlternateCertLinks extracts Link rel="alternate" targets from raw Link
+// header values and resolves them against baseURL.
+func parseAlternateCertLinks(linkHeaders []string, baseURL string) []string {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, raw := range linkHeaders {
+		for _, part := range splitLinkHeaderValues(raw) {
+			target, ok := parseAlternateLinkPart(part)
+			if !ok {
+				continue
+			}
+			u, err := url.Parse(target)
+			if err != nil {
+				continue
+			}
+			resolved := base.ResolveReference(u)
+			if resolved.Scheme != "http" && resolved.Scheme != "https" {
+				continue
+			}
+			s := resolved.String()
+			if _, exists := seen[s]; exists {
+				continue
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// splitLinkHeaderValues splits a Link header value into link-value components,
+// preserving commas inside quoted strings.
+func splitLinkHeaderValues(v string) []string {
+	parts := make([]string, 0)
+	start := 0
+	inQuote := false
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case '"':
+			inQuote = !inQuote
+		case ',':
+			if inQuote {
+				continue
+			}
+			parts = append(parts, strings.TrimSpace(v[start:i]))
+			start = i + 1
+		}
+	}
+	parts = append(parts, strings.TrimSpace(v[start:]))
+	return parts
+}
+
+// parseAlternateLinkPart returns the target URL from a single link-value when
+// it contains rel="alternate" (or rel=alternate).
+func parseAlternateLinkPart(part string) (string, bool) {
+	part = strings.TrimSpace(part)
+	if part == "" || !strings.HasPrefix(part, "<") {
+		return "", false
+	}
+	closeIdx := strings.IndexByte(part, '>')
+	if closeIdx <= 1 {
+		return "", false
+	}
+	target := part[1:closeIdx]
+
+	params := strings.Split(part[closeIdx+1:], ";")
+	for _, p := range params {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 || !strings.EqualFold(strings.TrimSpace(kv[0]), "rel") {
+			continue
+		}
+		relVal := strings.TrimSpace(kv[1])
+		relVal = strings.Trim(relVal, "\"")
+		for _, rel := range strings.Fields(relVal) {
+			if strings.EqualFold(rel, "alternate") {
+				return target, true
+			}
+		}
+	}
+	return "", false
 }
 
 // RevokeCertificate requests revocation of a DER-encoded certificate.

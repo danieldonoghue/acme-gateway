@@ -102,6 +102,7 @@ Details:
 - Propagation/delegation hardening: [docs/decisions/0007-authoritative-propagation-and-dns01-delegation.md](docs/decisions/0007-authoritative-propagation-and-dns01-delegation.md)
 - Non-blocking answer-challenge + best-effort propagation: [docs/decisions/0008-asynchronous-answer-challenge-processing.md](docs/decisions/0008-asynchronous-answer-challenge-processing.md)
 - Product limitation decision: [docs/decisions/0006-single-dns-provider-per-upstream.md](docs/decisions/0006-single-dns-provider-per-upstream.md)
+- Alternate chain passthrough: [docs/decisions/0009-alternate-certificate-chain-passthrough.md](docs/decisions/0009-alternate-certificate-chain-passthrough.md)
 - Preferred compiled hooks: [danieldonoghue/acme-gateway-hooks](https://github.com/danieldonoghue/acme-gateway-hooks)
 - Legacy shell templates: [packaging/hooks.d/examples](packaging/hooks.d/examples)
 - E2E hook command guide: [test/e2e/examples/README.md](test/e2e/examples/README.md)
@@ -115,6 +116,12 @@ See [config.yaml.example](config.yaml.example) for the full annotated configurat
 - Omit `upstream_profile` → strip (send no profile field upstream, CA uses its default)
 - `upstream_profile: "name"` → always send this name upstream (override)
 - `upstream_profile: "$passthrough"` → forward the inbound profile verbatim
+
+**Alternate certificate chains (`Link rel="alternate"`)** — The gateway rewrites
+upstream alternate certificate URLs to gateway `/cert/{id}` URLs and returns
+them in Link headers on certificate responses. ACME clients that support
+preferred-chain behavior can therefore select alternates through the gateway
+without additional gateway policy.
 
 **Upstream account routing for new orders** — New orders are bound to a dedicated upstream account per gateway ACME account (`upstream_id + account_id`) so challenge/account context stays consistent for strict `dns-01` validation. This avoids account-context mismatches when proxying to Let's Encrypt. See docs/decisions/0004-upstream-account-bound-routing-for-dns01.md.
 

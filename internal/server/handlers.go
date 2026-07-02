@@ -187,6 +187,11 @@ func (h *Handler) upLinkHeader(authzURL string) string {
 	return fmt.Sprintf(`<%s>;rel="up"`, authzURL)
 }
 
+// alternateLinkHeader returns a Link header value for an alternate certificate URL.
+func (h *Handler) alternateLinkHeader(certURL string) string {
+	return fmt.Sprintf(`<%s>;rel="alternate"`, certURL)
+}
+
 // addCommonHeaders adds Replay-Nonce and Link headers to every response.
 func (h *Handler) addCommonHeaders(w http.ResponseWriter) {
 	w.Header().Set("Link", h.linkHeader())
@@ -1037,11 +1042,12 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chain, err := client.FetchCertificate(r.Context(), rm.UpstreamURL)
+	result, err := client.FetchCertificateWithAlternates(r.Context(), rm.UpstreamURL)
 	if err != nil {
 		h.writeError(w, errServerInternal("fetching certificate: "+err.Error()))
 		return
 	}
+	chain := result.Chain
 
 	// Cache the leaf-cert fingerprint so revocation can be routed to the correct upstream.
 	if rm.CertFingerprint == "" {
@@ -1052,9 +1058,45 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	for _, altUpstreamURL := range result.AlternateCertURLs {
+		altGatewayURL, err := h.ensureGatewayCertURL(r.Context(), order.ID, altUpstreamURL)
+		if err != nil {
+			h.log.Warn("alternate cert link mapping failed", "order_id", order.ID, "upstream_url", altUpstreamURL, "err", err)
+			continue
+		}
+		w.Header().Add("Link", h.alternateLinkHeader(altGatewayURL))
+	}
+
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
 	w.Write(chain) /* #nosec G705 */ //nolint:errcheck,gosec
+}
+
+// ensureGatewayCertURL ensures there is a gateway cert resource for the given
+// upstream certificate URL and returns its gateway URL.
+func (h *Handler) ensureGatewayCertURL(ctx context.Context, orderID, upstreamCertURL string) (string, error) {
+	rm, err := h.store.GetResourceByUpstreamURL(ctx, upstreamCertURL)
+	if err != nil {
+		return "", err
+	}
+	if rm == nil {
+		if err := h.store.SaveResource(ctx, &model.ResourceMap{
+			GatewayID:    uuid.New().String(),
+			ResourceType: model.ResourceTypeCert,
+			OrderID:      orderID,
+			UpstreamURL:  upstreamCertURL,
+		}); err != nil {
+			return "", err
+		}
+		rm, err = h.store.GetResourceByUpstreamURL(ctx, upstreamCertURL)
+		if err != nil {
+			return "", err
+		}
+		if rm == nil {
+			return "", fmt.Errorf("certificate resource not found after insert")
+		}
+	}
+	return h.cfg.Server.BaseURL + "/cert/" + rm.GatewayID, nil
 }
 
 // ─── POST /revoke-cert ────────────────────────────────────────────────────────

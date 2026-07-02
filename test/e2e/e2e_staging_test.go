@@ -187,7 +187,16 @@ func TestStagingLELegoViaGateway(t *testing.T) {
 	skipDNSPreCheck := legodns01.WrapPreCheck(func(_, _, _ string, _ legodns01.PreCheckFunc) (bool, error) {
 		return true, nil
 	})
-	if err := legoClient.Challenge.SetDNS01Provider(&noopDNSProvider{}, skipDNSPreCheck); err != nil {
+	if err := legoClient.Challenge.SetDNS01Provider(
+		&noopDNSProvider{},
+		skipDNSPreCheck,
+		// Keep lego from performing any recursive/authoritative propagation waits.
+		// In this test mode the gateway is the sole DNS publisher and already gates
+		// upstream trigger on authoritative propagation + settle delay.
+		legodns01.PropagationWait(0, true),
+		legodns01.DisableCompletePropagationRequirement(),
+		legodns01.DisableAuthoritativeNssPropagationRequirement(),
+	); err != nil {
 		t.Fatalf("lego dns provider setup failed: %v", err)
 	}
 

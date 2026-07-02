@@ -170,10 +170,14 @@ func (c *Client) FetchCertificateWithAlternates(ctx context.Context, certURL str
 	if err != nil {
 		return nil, err
 	}
+	linkBaseURL := certURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		linkBaseURL = resp.Request.URL.String()
+	}
 
 	return &CertificateFetchResult{
 		Chain:             chain,
-		AlternateCertURLs: parseAlternateCertLinks(resp.Header.Values("Link"), certURL),
+		AlternateCertURLs: parseAlternateCertLinks(resp.Header.Values("Link"), linkBaseURL),
 	}, nil
 }
 
@@ -218,16 +222,29 @@ func splitLinkHeaderValues(v string) []string {
 	parts := make([]string, 0)
 	start := 0
 	inQuote := false
+	escaped := false
 	for i := 0; i < len(v); i++ {
 		switch v[i] {
+		case '\\':
+			if inQuote {
+				escaped = !escaped
+				continue
+			}
+			escaped = false
 		case '"':
-			inQuote = !inQuote
+			if !escaped {
+				inQuote = !inQuote
+			}
+			escaped = false
 		case ',':
+			escaped = false
 			if inQuote {
 				continue
 			}
 			parts = append(parts, strings.TrimSpace(v[start:i]))
 			start = i + 1
+		default:
+			escaped = false
 		}
 	}
 	parts = append(parts, strings.TrimSpace(v[start:]))

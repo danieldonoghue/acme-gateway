@@ -36,6 +36,30 @@ func TestSplitLinkHeaderValues_RespectsQuotedCommas(t *testing.T) {
 	}
 }
 
+func TestSplitLinkHeaderValues_RespectsEscapedQuotes(t *testing.T) {
+	in := `<https://upstream.example/alt>;rel="alternate", <https://upstream.example/meta>;title="a\\\",b", <https://upstream.example/x>;rel="index"`
+	got := splitLinkHeaderValues(in)
+	want := []string{
+		`<https://upstream.example/alt>;rel="alternate"`,
+		`<https://upstream.example/meta>;title="a\\\",b"`,
+		`<https://upstream.example/x>;rel="index"`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("splitLinkHeaderValues() = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseAlternateCertLinks_RelativeAgainstRedirectedURL(t *testing.T) {
+	headers := []string{`<../alt-chain>; rel="alternate"`}
+	base := "https://upstream.example/acme/cert/current/"
+
+	got := parseAlternateCertLinks(headers, base)
+	want := []string{"https://upstream.example/acme/cert/alt-chain"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseAlternateCertLinks() = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseAlternateLinkPart(t *testing.T) {
 	tests := []struct {
 		name string

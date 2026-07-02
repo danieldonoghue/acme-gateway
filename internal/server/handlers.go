@@ -1075,7 +1075,7 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 // ensureGatewayCertURL ensures there is a gateway cert resource for the given
 // upstream certificate URL and returns its gateway URL.
 func (h *Handler) ensureGatewayCertURL(ctx context.Context, orderID, upstreamCertURL string) (string, error) {
-	rm, err := h.store.GetResourceByUpstreamURL(ctx, upstreamCertURL)
+	rm, err := h.store.GetResourceByUpstreamURLAndOrder(ctx, upstreamCertURL, orderID)
 	if err != nil {
 		return "", err
 	}
@@ -1088,7 +1088,7 @@ func (h *Handler) ensureGatewayCertURL(ctx context.Context, orderID, upstreamCer
 		}); err != nil {
 			return "", err
 		}
-		rm, err = h.store.GetResourceByUpstreamURL(ctx, upstreamCertURL)
+		rm, err = h.store.GetResourceByUpstreamURLAndOrder(ctx, upstreamCertURL, orderID)
 		if err != nil {
 			return "", err
 		}

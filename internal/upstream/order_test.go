@@ -10,6 +10,7 @@ func TestParseAlternateCertLinks(t *testing.T) {
 	headers := []string{
 		`<https://upstream.example/acme/cert/alt-r3>;rel="alternate", <https://upstream.example/acme/cert/default>;rel="index"`,
 		`</acme/cert/alt-e1>; rel=alternate`,
+		`<https://evil.example/acme/cert/alt-bad>;rel="alternate"`,
 		`<mailto:ops@example.com>;rel="alternate"`,
 	}
 
@@ -18,6 +19,21 @@ func TestParseAlternateCertLinks(t *testing.T) {
 		"https://upstream.example/acme/cert/alt-r3",
 		"https://upstream.example/acme/cert/alt-e1",
 	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseAlternateCertLinks() = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseAlternateCertLinks_RejectsCrossOrigin(t *testing.T) {
+	base := "https://upstream.example/acme/cert/default"
+	headers := []string{
+		`<https://upstream.example/acme/cert/alt-ok>;rel="alternate"`,
+		`<http://upstream.example/acme/cert/alt-http>;rel="alternate"`,
+		`<https://evil.example/acme/cert/alt-evil>;rel="alternate"`,
+	}
+
+	got := parseAlternateCertLinks(headers, base)
+	want := []string{"https://upstream.example/acme/cert/alt-ok"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseAlternateCertLinks() = %#v, want %#v", got, want)
 	}

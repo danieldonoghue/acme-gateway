@@ -188,6 +188,12 @@ func parseAlternateCertLinks(linkHeaders []string, baseURL string) []string {
 	if err != nil {
 		return nil
 	}
+	if base.Scheme != "http" && base.Scheme != "https" {
+		return nil
+	}
+	if base.Host == "" {
+		return nil
+	}
 
 	seen := make(map[string]struct{})
 	out := make([]string, 0)
@@ -203,6 +209,11 @@ func parseAlternateCertLinks(linkHeaders []string, baseURL string) []string {
 			}
 			resolved := base.ResolveReference(u)
 			if resolved.Scheme != "http" && resolved.Scheme != "https" {
+				continue
+			}
+			// Only allow same-origin alternates to avoid expanding outbound fetch
+			// targets based on untrusted Link headers.
+			if !strings.EqualFold(resolved.Scheme, base.Scheme) || !strings.EqualFold(resolved.Host, base.Host) {
 				continue
 			}
 			s := resolved.String()

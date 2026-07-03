@@ -197,6 +197,22 @@ func errBadCSR(detail string) *acmeError {
 	return &acmeError{Type: "urn:ietf:params:acme:error:badCSR", Detail: detail, Status: http.StatusBadRequest}
 }
 
+// isDefinitiveRejection reports whether an upstream HTTP status represents a
+// terminal client-side rejection (a 4xx the client cannot fix by retrying),
+// as opposed to a transient condition. 408 (Request Timeout) and 429 (Too Many
+// Requests) are excluded so a retry can still succeed; 5xx are transient too.
+func isDefinitiveRejection(status int) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	switch status {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	default:
+		return true
+	}
+}
+
 // writeError writes an ACME problem document and attaches a fresh Replay-Nonce.
 func (h *Handler) writeError(w http.ResponseWriter, e *acmeError) {
 	h.attachNonce(w)
@@ -1026,7 +1042,11 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	// the rule selected at new-order time.
 	var orderIdentifiers []model.Identifier
 	if err := json.Unmarshal([]byte(order.Identifiers), &orderIdentifiers); err != nil {
-		h.writeError(w, errServerInternal("decoding order identifiers"))
+		// Stored identifiers should always be valid JSON we wrote at new-order;
+		// a decode failure implies state/DB corruption, so log for diagnosis.
+		h.log.Error("decoding stored order identifiers",
+			"order_id", order.ID, "upstream_id", order.UpstreamID, "err", err)
+		h.writeError(w, errServerInternal("decoding order identifiers: "+err.Error()))
 		return
 	}
 	decision := h.router.Route(&router.Request{
@@ -1061,11 +1081,13 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 			"order_id", order.ID, "upstream_id", order.UpstreamID, "profile", order.Profile,
 			"account_key_type", acct.KeyType, "csr_key_type", csrKeyType, "err", err)
 		ferr := relayUpstreamError("finalizing upstream order", err)
-		// A definitive upstream rejection (4xx ACME problem, e.g. the CA refusing
-		// to issue this CSR/order) is terminal: mark our order invalid so the
-		// client sees a final state and stops polling a perpetually-"ready" order
-		// until timeout. Transport/5xx errors are left as-is (may be transient).
-		if ferr.Status >= 400 && ferr.Status < 500 {
+		// A *definitive* upstream rejection (4xx ACME problem, e.g. the CA
+		// refusing to issue this CSR/order) is terminal: mark our order invalid
+		// so the client sees a final state and stops polling a perpetually-
+		// "ready" order until timeout. Transport/5xx errors and transient 4xx
+		// (408 Request Timeout, 429 Too Many Requests) are left as-is so a retry
+		// can still succeed.
+		if isDefinitiveRejection(ferr.Status) {
 			if uerr := h.store.UpdateOrderStatus(r.Context(), order.ID, model.OrderStatusInvalid); uerr != nil {
 				// The relayed 4xx still makes the client fail fast, but if we
 				// cannot persist "invalid" a later order poll may report the

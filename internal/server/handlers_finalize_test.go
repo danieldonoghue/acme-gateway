@@ -33,17 +33,21 @@ import (
 // finalizeTestEnv wires a store, upstream stub, and handler with a routing
 // rule that requires RSA CSRs for profile "tlsclient-rsa".
 type finalizeTestEnv struct {
-	st           *store.Store
-	handler      *Handler
-	acctKey      *ecdsa.PrivateKey
-	baseURL      string
-	finalizeHits *atomic.Int64
+	st      *store.Store
+	handler *Handler
+	acctKey *ecdsa.PrivateKey
+	baseURL string
+	// finalizeHits counts upstream finalize calls. finalizeStatus, when set to
+	// a non-zero HTTP status, makes the upstream finalize stub return that
+	// status with an ACME problem document instead of "processing".
+	finalizeHits   *atomic.Int64
+	finalizeStatus *atomic.Int64
 }
 
 func newFinalizeTestEnv(t *testing.T) *finalizeTestEnv {
 	t.Helper()
 
-	var hits atomic.Int64
+	var hits, finalizeStatus atomic.Int64
 	var srvURL string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -61,6 +65,15 @@ func newFinalizeTestEnv(t *testing.T) *finalizeTestEnv {
 		case r.Method == http.MethodPost && r.URL.Path == "/acme/finalize/1":
 			hits.Add(1)
 			w.Header().Set("Replay-Nonce", "up-nonce-2")
+			if code := finalizeStatus.Load(); code != 0 {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(int(code))
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"type":   "urn:ietf:params:acme:error:serverInternal",
+					"detail": "stubbed finalize failure",
+				})
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":   "processing",
 				"finalize": srvURL + "/acme/finalize/1",
@@ -158,11 +171,12 @@ func newFinalizeTestEnv(t *testing.T) *finalizeTestEnv {
 	}
 
 	return &finalizeTestEnv{
-		st:           st,
-		handler:      h,
-		acctKey:      acctKey,
-		baseURL:      "https://gw.example",
-		finalizeHits: &hits,
+		st:             st,
+		handler:        h,
+		acctKey:        acctKey,
+		baseURL:        "https://gw.example",
+		finalizeHits:   &hits,
+		finalizeStatus: &finalizeStatus,
 	}
 }
 
@@ -264,5 +278,52 @@ func TestHandleFinalize_AcceptsMatchingCSRKeyType(t *testing.T) {
 	}
 	if got := env.finalizeHits.Load(); got != 1 {
 		t.Errorf("upstream finalize hit %d times, want 1", got)
+	}
+}
+
+// rsaCSR builds a valid RSA CSR that passes the require_csr_key_type=RSA rule,
+// so finalize proxies upstream and we can exercise the rejection handling.
+func rsaCSR(t *testing.T) []byte {
+	t.Helper()
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	return testCSR(t, rsaKey)
+}
+
+func TestHandleFinalize_DefinitiveUpstreamRejectionInvalidatesOrder(t *testing.T) {
+	env := newFinalizeTestEnv(t)
+	env.finalizeStatus.Store(http.StatusForbidden) // 403: definitive rejection
+
+	rr := env.postFinalize(t, rsaCSR(t))
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (relayed) body=%s", rr.Code, rr.Body.String())
+	}
+	order, err := env.st.GetOrder(context.Background(), "order-1")
+	if err != nil {
+		t.Fatalf("GetOrder: %v", err)
+	}
+	if order.Status != model.OrderStatusInvalid {
+		t.Errorf("order status = %q, want invalid (definitive rejection should be terminal)", order.Status)
+	}
+}
+
+func TestHandleFinalize_TransientUpstreamErrorDoesNotInvalidateOrder(t *testing.T) {
+	env := newFinalizeTestEnv(t)
+	env.finalizeStatus.Store(http.StatusTooManyRequests) // 429: transient
+
+	rr := env.postFinalize(t, rsaCSR(t))
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (relayed) body=%s", rr.Code, rr.Body.String())
+	}
+	order, err := env.st.GetOrder(context.Background(), "order-1")
+	if err != nil {
+		t.Fatalf("GetOrder: %v", err)
+	}
+	if order.Status != model.OrderStatusReady {
+		t.Errorf("order status = %q, want ready (transient error must not invalidate)", order.Status)
 	}
 }

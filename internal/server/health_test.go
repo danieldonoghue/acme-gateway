@@ -45,9 +45,10 @@ func TestHandleUpstreamsHealth(t *testing.T) {
 	// A reachable upstream that serves a valid ACME directory.
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/directory" {
+			base := "http://" + r.Host
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"newNonce": r.Host + "/new-nonce",
-				"newOrder": r.Host + "/new-order",
+				"newNonce": base + "/new-nonce",
+				"newOrder": base + "/new-order",
 			})
 			return
 		}

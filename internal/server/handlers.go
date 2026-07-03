@@ -1061,7 +1061,13 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		// client sees a final state and stops polling a perpetually-"ready" order
 		// until timeout. Transport/5xx errors are left as-is (may be transient).
 		if ferr.Status >= 400 && ferr.Status < 500 {
-			h.store.UpdateOrderStatus(r.Context(), order.ID, model.OrderStatusInvalid) //nolint:errcheck,gosec
+			if uerr := h.store.UpdateOrderStatus(r.Context(), order.ID, model.OrderStatusInvalid); uerr != nil {
+				// The relayed 4xx still makes the client fail fast, but if we
+				// cannot persist "invalid" a later order poll may report the
+				// stale upstream status — surface it so it is not silent.
+				h.log.Warn("failed to mark order invalid after upstream finalize rejection",
+					"order_id", order.ID, "upstream_id", order.UpstreamID, "err", uerr)
+			}
 		}
 		h.writeError(w, ferr)
 		return

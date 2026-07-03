@@ -1,15 +1,17 @@
 // Command acme-probe reproduces the acme-gateway's exact upstream flow
-// (directory → new-account+EAB → new-order → get-authz) directly against a CA,
-// using the gateway's own internal/upstream client. It stops BEFORE deploying
-// or triggering any challenge, so it safely isolates where the flow stalls.
+// (directory → new-account+EAB → new-order → get-authz) directly against an
+// upstream ACME CA, using the gateway's own internal/upstream client. It stops
+// BEFORE deploying or triggering any challenge, so it safely isolates where the
+// flow stalls — useful for distinguishing a gateway bug from an upstream one.
 //
-// Throwaway diagnostic — delete when done.
+// It touches no gateway state; each run registers a fresh throwaway account.
 //
 //	go run ./cmd/acme-probe \
-//	  -dir  https://one.nl.digicert.com/mpki/api/v1/acme/v2/directory \
-//	  -kid  "$PRIVATE_CA_RSA_EAB_KID" \
-//	  -hmac "$PRIVATE_CA_RSA_EAB_HMAC" \
-//	  -domains sip-gw1-fi.aurorateleq.com,sip-gw-fi.aurorateleq.com
+//	  -dir     https://acme.example.com/directory \
+//	  -kid     "$ACME_EAB_KID" \
+//	  -hmac    "$ACME_EAB_HMAC" \
+//	  -email   ops@example.com \
+//	  -domains host1.example.com,host2.example.com
 package main
 
 import (
@@ -34,17 +36,17 @@ import (
 
 func main() {
 	dir := flag.String("dir", "", "ACME directory URL (required)")
-	kid := flag.String("kid", os.Getenv("PRIVATE_CA_RSA_EAB_KID"), "EAB key ID (defaults to $PRIVATE_CA_RSA_EAB_KID)")
-	hmac := flag.String("hmac", os.Getenv("PRIVATE_CA_RSA_EAB_HMAC"), "EAB HMAC key (defaults to $PRIVATE_CA_RSA_EAB_HMAC)")
-	email := flag.String("email", "driftinfo@aurorainnovation.com", "contact email")
+	kid := flag.String("kid", os.Getenv("ACME_EAB_KID"), "EAB key ID (defaults to $ACME_EAB_KID)")
+	hmac := flag.String("hmac", os.Getenv("ACME_EAB_HMAC"), "EAB HMAC key (defaults to $ACME_EAB_HMAC)")
+	email := flag.String("email", os.Getenv("ACME_EMAIL"), "account contact email (required; defaults to $ACME_EMAIL)")
 	domainsCSV := flag.String("domains", "", "comma-separated dns identifiers (required)")
-	profile := flag.String("profile", "", "upstream profile (empty = omit, matches private-ca-rsa)")
+	profile := flag.String("profile", "", "upstream profile (empty = omit the field)")
 	doFinalize := flag.Bool("finalize", false, "actually finalize with a CSR and download the cert (ISSUES A REAL CERT)")
 	csrKey := flag.String("csr-key", "rsa", "CSR key type when -finalize: rsa | ecdsa")
 	flag.Parse()
 
-	if *dir == "" || *domainsCSV == "" {
-		fmt.Fprintln(os.Stderr, "error: -dir and -domains are required")
+	if *dir == "" || *domainsCSV == "" || *email == "" {
+		fmt.Fprintln(os.Stderr, "error: -dir, -domains and -email are required")
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -109,8 +111,9 @@ func main() {
 
 	// ── re-poll the order (THE decisive test) ────────────────────────────────
 	// All authorizations above are already valid. Per RFC 8555 §7.1.6 the order
-	// must therefore transition pending → ready. Poll it and watch: if DigiCert
-	// keeps it "pending", that is precisely what certbot and the gateway hang on.
+	// must therefore transition pending → ready. Poll it and watch: if the
+	// upstream CA keeps it "pending", that is precisely what the client and the
+	// gateway hang on.
 	step("Re-poll order — expecting pending → ready now that all authz are valid")
 	const polls = 6
 	for i := 1; i <= polls; i++ {
@@ -120,8 +123,8 @@ func main() {
 		}
 		fmt.Printf("    poll %d/%d: order status = %s\n", i, polls, o.Status)
 		if o.Status == "ready" || o.Status == "valid" {
-			fmt.Printf("\n✔ Order reached %q — DigiCert's order/authz path is HEALTHY.\n"+
-				"  If production still hangs, the stall is in the gateway relaying this, not DigiCert.\n", o.Status)
+			fmt.Printf("\n✔ Order reached %q — the upstream CA's order/authz path is HEALTHY.\n"+
+				"  If issuance still hangs, the stall is in the gateway relaying this, not the upstream CA.\n", o.Status)
 			if *doFinalize {
 				finalize(ctx, client, order.Finalize, orderURL, ids, *csrKey)
 			} else {
@@ -139,7 +142,7 @@ func main() {
 	}
 
 	fmt.Printf("\n✗ Order STUCK at pending across %d polls despite all authorizations being valid.\n"+
-		"  This is a DigiCert-side order-state-machine problem (RFC 8555 §7.1.6 says it should be 'ready').\n"+
+		"  This is an upstream-CA-side order-state-machine problem (RFC 8555 §7.1.6 says it should be 'ready').\n"+
 		"  certbot and the gateway both poll this order for 'ready' and will hang until timeout — exactly your symptom.\n", polls)
 	os.Exit(1)
 }
@@ -147,7 +150,7 @@ func main() {
 // finalize builds a CSR of the requested key type, submits it, polls the order
 // to valid, and downloads the certificate — the exact step certbot performs
 // that neither the logs nor the earlier phases have exercised. A key-type
-// mismatch against DigiCert's product shows up here (badCSR, or a stuck order).
+// mismatch against the upstream CA's product shows up here (badCSR, or a stuck order).
 func finalize(ctx context.Context, client *upstream.Client, finalizeURL, orderURL string, ids []upstream.Identifier, csrKey string) {
 	dnsNames := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -193,16 +196,16 @@ func finalize(ctx context.Context, client *upstream.Client, finalizeURL, orderUR
 		switch o.Status {
 		case "valid":
 			fmt.Printf("\n✔ FULL FLOW SUCCEEDED with a %s CSR — certificate = %s\n"+
-				"  So a %s CSR is accepted by this DigiCert product. If prod hangs, the client is sending a DIFFERENT key type.\n",
+				"  So a %s CSR is accepted by this upstream CA product. If issuance hangs, the client is sending a DIFFERENT key type.\n",
 				strings.ToUpper(csrKey), o.Certificate, strings.ToUpper(csrKey))
 			return
 		case "invalid":
 			dump("order", o)
-			fail("order INVALID after finalize", fmt.Errorf("DigiCert rejected the %s CSR (see order.error above)", csrKey))
+			fail("order INVALID after finalize", fmt.Errorf("the upstream CA rejected the %s CSR (see order.error above)", csrKey))
 		}
 		time.Sleep(3 * time.Second)
 	}
-	fmt.Printf("\n✗ Order STUCK in %q after finalizing a %s CSR — DigiCert accepted finalize but never issued.\n"+
+	fmt.Printf("\n✗ Order STUCK in %q after finalizing a %s CSR — the upstream CA accepted finalize but never issued.\n"+
 		"  This is the smoking gun for a wrong-key-type/product hang: the client would poll forever.\n", o.Status, strings.ToUpper(csrKey))
 	os.Exit(1)
 }
@@ -243,7 +246,7 @@ func must(what string, err error) {
 
 func fail(what string, err error) {
 	fmt.Printf("\n✗ %s FAILED: %v\n", what, err)
-	fmt.Println("→ This is the phase where production stalls. The error/latency above is DigiCert's response, isolated from certbot and the gateway.")
+	fmt.Println("→ This is the phase where issuance stalls. The error/latency above is the upstream CA's response, isolated from the client and the gateway.")
 	os.Exit(1)
 }
 

@@ -50,6 +50,12 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	// EAB requires both halves; one without the other fails later with a
+	// low-signal base64/JWS error, so reject the mismatch upfront.
+	if (*kid == "") != (*hmac == "") {
+		fmt.Fprintln(os.Stderr, "error: -kid and -hmac must be provided together (EAB needs both, or neither)")
+		os.Exit(2)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

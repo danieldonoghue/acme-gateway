@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -107,9 +108,27 @@ type ACMEError struct {
 
 func (e *ACMEError) Error() string {
 	if len(e.Subproblems) > 0 {
-		return fmt.Sprintf("ACME error %s: %s (subproblems: %s)", e.Type, e.Detail, string(e.Subproblems))
+		return fmt.Sprintf("ACME error %s: %s (subproblems: %s)", e.Type, e.Detail, summarizeSubproblems(e.Subproblems))
 	}
 	return fmt.Sprintf("ACME error %s: %s", e.Type, e.Detail)
+}
+
+// maxSubproblemLogRunes bounds how much of the subproblems JSON is embedded in
+// the Error() string, keeping log lines small and single-line. The full raw
+// JSON is still available via the Subproblems field for relaying to the client.
+const maxSubproblemLogRunes = 512
+
+// summarizeSubproblems renders subproblems JSON for a log/error string: newlines
+// and carriage returns are collapsed to spaces (defends against multi-line
+// log injection from upstream-controlled content) and the result is truncated
+// to a bounded length.
+func summarizeSubproblems(raw json.RawMessage) string {
+	s := strings.ReplaceAll(string(raw), "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	if r := []rune(s); len(r) > maxSubproblemLogRunes {
+		return string(r[:maxSubproblemLogRunes]) + "…(truncated)"
+	}
+	return s
 }
 
 // New creates a Client using the provided private key.

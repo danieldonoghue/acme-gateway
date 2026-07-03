@@ -406,3 +406,38 @@ func decodeProtectedHeader(t *testing.T, jwsBody []byte) map[string]json.RawMess
 	}
 	return hdr
 }
+
+func TestACMEError_Error_SubproblemsTruncatedAndSingleLine(t *testing.T) {
+	// Newlines must be collapsed and the output bounded, regardless of upstream size.
+	big := make([]json.RawMessage, 50)
+	for i := range big {
+		big[i] = json.RawMessage(`{"type":"urn:ietf:params:acme:error:badCSR","detail":"line\none\ntwo"}`)
+	}
+	raw, err := json.Marshal(big)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Inject a literal newline into the raw bytes to exercise sanitization.
+	raw = []byte(string(raw) + "\nTRAILING")
+
+	ae := &ACMEError{Type: "urn:ietf:params:acme:error:serverInternal", Detail: "boom", Subproblems: raw}
+	got := ae.Error()
+
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("Error() must be single-line, got newlines: %q", got)
+	}
+	if !strings.Contains(got, "…(truncated)") {
+		t.Errorf("Error() should be truncated for large subproblems, got %q", got)
+	}
+	// Bounded: prefix + capped runes + suffix, comfortably under the raw size.
+	if len([]rune(got)) > maxSubproblemLogRunes+200 {
+		t.Errorf("Error() length %d exceeds bound", len([]rune(got)))
+	}
+}
+
+func TestACMEError_Error_NoSubproblems(t *testing.T) {
+	ae := &ACMEError{Type: "urn:ietf:params:acme:error:badCSR", Detail: "nope"}
+	if got := ae.Error(); got != "ACME error urn:ietf:params:acme:error:badCSR: nope" {
+		t.Errorf("unexpected: %q", got)
+	}
+}

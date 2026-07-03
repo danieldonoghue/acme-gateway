@@ -40,6 +40,23 @@ func TestRoute_ProfileAndKeyType(t *testing.T) {
 	}
 }
 
+func TestRoute_RequireCSRKeyTypeCarried(t *testing.T) {
+	r := makeRouter([]config.RoutingRule{
+		{Match: config.MatchConfig{Profile: "tlsclient-rsa"}, Upstream: "private-ca-rsa", RequireCSRKeyType: "RSA"},
+	}, "letsencrypt")
+
+	d := r.Route(&Request{Profile: "tlsclient-rsa"})
+	if d.RequireCSRKeyType != "RSA" {
+		t.Errorf("RequireCSRKeyType = %q, want RSA", d.RequireCSRKeyType)
+	}
+
+	// Default (no rule match) carries no requirement.
+	d = r.Route(&Request{Profile: "other"})
+	if d.RequireCSRKeyType != "" {
+		t.Errorf("RequireCSRKeyType = %q, want empty for default upstream", d.RequireCSRKeyType)
+	}
+}
+
 func TestRoute_KeyTypeCaseInsensitive(t *testing.T) {
 	r := makeRouter([]config.RoutingRule{
 		{Match: config.MatchConfig{KeyType: "RSA"}, Upstream: "private-ca-rsa"},

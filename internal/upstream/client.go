@@ -94,14 +94,21 @@ type Identifier struct {
 	Value string `json:"value"`
 }
 
-// ACMEError represents an ACME problem document.
+// ACMEError represents an ACME problem document (RFC 8555 §6.7).
 type ACMEError struct {
 	Type   string `json:"type"`
 	Detail string `json:"detail"`
 	Status int    `json:"status"`
+	// Subproblems carries the raw "subproblems" array (RFC 8555 §6.7.1) when the
+	// CA returns per-identifier detail (e.g. which SAN was rejected at finalize).
+	// Kept as raw JSON so it can be relayed to the downstream client verbatim.
+	Subproblems json.RawMessage `json:"subproblems,omitempty"`
 }
 
 func (e *ACMEError) Error() string {
+	if len(e.Subproblems) > 0 {
+		return fmt.Sprintf("ACME error %s: %s (subproblems: %s)", e.Type, e.Detail, string(e.Subproblems))
+	}
 	return fmt.Sprintf("ACME error %s: %s", e.Type, e.Detail)
 }
 

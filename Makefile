@@ -23,6 +23,7 @@ help: ## Show this help message
 
 build: ## Build for the local OS/arch
 	go build -trimpath -ldflags "$(LDFLAGS)" -o dist/acme-gateway ./cmd/acme-gateway
+	go build -trimpath -ldflags "$(LDFLAGS)" -o dist/acme-probe ./cmd/acme-probe
 
 # ── Cross-compiled Linux binaries ────────────────────────────────────────────
 
@@ -48,19 +49,17 @@ test-e2e-dns01: ## Run Pebble dns-01 test with BIND hook binaries (requires Dock
 	go clean -testcache
 	ACME_E2E_PEBBLE_DNS=1 ACME_E2E_COMPOSE_PROFILE=dns-challenge ACME_E2E_PEBBLE_DNS_PRESENT_CMD='BIND_DNS_SERVER=$(BIND_E2E_DNS_SERVER) BIND_DNS_ZONE=$(BIND_E2E_DNS_ZONE) $(ACME_HOOKS_BIN_DIR)/bind-dns-deploy' ACME_E2E_PEBBLE_DNS_CLEANUP_CMD='BIND_DNS_SERVER=$(BIND_E2E_DNS_SERVER) BIND_DNS_ZONE=$(BIND_E2E_DNS_ZONE) $(ACME_HOOKS_BIN_DIR)/bind-dns-cleanup' go test -v -tags e2e -run TestPebbleDNS01 -timeout 5m ./test/e2e/...
 
-test-e2e-staging: ## Run LE staging E2E via dns-01 hook commands (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; EXCEDO_API_TOKEN for the excedo hook; optional ACME_E2E_DNS_CLEANUP_CMD)
+test-e2e-staging: ## Run LE staging E2E via dns-01 hook commands (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; optional ACME_E2E_DNS_CLEANUP_CMD; ACME_DNS_CHALLENGE_ZONE for CNAME delegation; any backend-specific env is the hook's own concern)
 	@test -n "$(ACME_E2E_DOMAIN)" || (echo "Error: ACME_E2E_DOMAIN must be set" >&2; exit 1)
 	@test -n "$(ACME_E2E_EMAIL)" || (echo "Error: ACME_E2E_EMAIL must be set" >&2; exit 1)
 	@test -n "$(ACME_E2E_DNS_PRESENT_CMD)" || (echo "Error: ACME_E2E_DNS_PRESENT_CMD must be set" >&2; exit 1)
-	@case "$(ACME_E2E_DNS_PRESENT_CMD)$(ACME_E2E_DNS_CLEANUP_CMD)" in *excedo*) test -n "$(EXCEDO_API_TOKEN)" || { echo "Error: EXCEDO_API_TOKEN must be set for the excedo dns-01 hook" >&2; exit 1; } ;; esac
 	go clean -testcache
 	$(STAGING_E2E_ENV) go test -v -tags e2e -run '^TestStagingLE$$' -timeout 10m ./test/e2e/...
 
-test-e2e-staging-lego: ## Run LE staging E2E using lego as external client against acme-gateway (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; EXCEDO_API_TOKEN for the excedo hook; optional ACME_E2E_DNS_CLEANUP_CMD)
+test-e2e-staging-lego: ## Run LE staging E2E using lego as external client against acme-gateway (set ACME_E2E_DOMAIN ACME_E2E_EMAIL ACME_E2E_DNS_PRESENT_CMD; optional ACME_E2E_DNS_CLEANUP_CMD; ACME_DNS_CHALLENGE_ZONE for CNAME delegation; any backend-specific env is the hook's own concern)
 	@test -n "$(ACME_E2E_DOMAIN)" || (echo "Error: ACME_E2E_DOMAIN must be set" >&2; exit 1)
 	@test -n "$(ACME_E2E_EMAIL)" || (echo "Error: ACME_E2E_EMAIL must be set" >&2; exit 1)
 	@test -n "$(ACME_E2E_DNS_PRESENT_CMD)" || (echo "Error: ACME_E2E_DNS_PRESENT_CMD must be set" >&2; exit 1)
-	@case "$(ACME_E2E_DNS_PRESENT_CMD)$(ACME_E2E_DNS_CLEANUP_CMD)" in *excedo*) test -n "$(EXCEDO_API_TOKEN)" || { echo "Error: EXCEDO_API_TOKEN must be set for the excedo dns-01 hook" >&2; exit 1; } ;; esac
 	go clean -testcache
 	$(STAGING_E2E_ENV) go test -v -tags e2e -run '^TestStagingLELegoViaGateway$$' -timeout 10m ./test/e2e/...
 

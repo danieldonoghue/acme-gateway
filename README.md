@@ -117,6 +117,21 @@ See [config.yaml.example](config.yaml.example) for the full annotated configurat
 - `upstream_profile: "name"` → always send this name upstream (override)
 - `upstream_profile: "$passthrough"` → forward the inbound profile verbatim
 
+**CSR key-type enforcement (`require_csr_key_type`)** — Per routing rule, optional. When set to `RSA` or `ECDSA`, a finalize request whose CSR public key does not match is rejected with an ACME `badCSR` error before anything is sent to the upstream CA. Use this when a profile implies a specific certificate key type (e.g. separate RSA/ECDSA upstream accounts) to prevent a misconfigured client from obtaining the wrong certificate type:
+
+```yaml
+routing:
+  rules:
+    - match: { profile: "tlsclient-rsa" }
+      upstream: private-ca-rsa
+      require_csr_key_type: "RSA"
+    - match: { profile: "tlsclient-ecdsa" }
+      upstream: private-ca-ecdsa
+      require_csr_key_type: "ECDSA"
+```
+
+Note this checks the **certificate key in the CSR** at finalize, not the ACME account key — the two are independent (certbot ≥2.0 defaults certificate keys to ECDSA regardless of account key; set `--key-type` per certificate to match the profile). When omitted, no enforcement occurs (a key-type mismatch against the account key is still logged as a warning).
+
 **Alternate certificate chains (`Link rel="alternate"`)** — The gateway rewrites
 upstream alternate certificate URLs to gateway `/cert/{id}` URLs and returns
 them in Link headers on certificate responses. ACME clients that support
@@ -256,7 +271,47 @@ See [deploy/README.md](deploy/README.md) for full documentation including TLS ce
 - **EAB credentials are write-once per upstream account.** Rotating EAB credentials requires deleting the `upstream_accounts` row for that upstream (`DELETE FROM upstream_accounts WHERE upstream_id = 'name' AND slot = 0`) and restarting.
 - **Profile names are operator-defined.** Document your gateway's profile vocabulary in internal runbooks.
 - **Nonces** expire after 10 minutes and are pruned on startup and every 15 minutes.
-- **Structured JSON logging.** Every order logs: `account_id`, `upstream_id`, `routing_signal`, `profile`, `upstream_profile`, `order_id`, `identifiers`, `status`, `duration_ms`.
+- **Structured JSON logging.** Every order logs: `account_id`, `upstream_id`, `routing_signal`, `profile`, `upstream_profile`, `order_id`, `identifiers`, `status`, `duration_ms`. Upstream failures relayed to the client (order poll, authz, finalize, certificate) log a `WARN` with the `upstream_id` and error.
+
+## Health Checks
+
+Two unauthenticated `GET` endpoints are exposed for monitoring:
+
+| Endpoint | Purpose | Cost | Use for |
+|----------|---------|------|---------|
+| `GET /healthz` | Liveness/readiness. Pings the local SQLite state store only. | Cheap; **never contacts upstream CAs**. | Kubernetes `livenessProbe` / `readinessProbe` |
+| `GET /healthz/upstreams` | Fetches each configured upstream's ACME directory and reports reachability + latency. | One directory `GET` per upstream (no accounts/orders, so no rate-limit risk). | On-demand diagnostics, alerting |
+
+**`GET /healthz`** returns `200 {"status":"ok"}`, or `503 {"status":"unavailable"}` if the state store is unreachable. It deliberately does **not** probe upstreams — otherwise a CA outage would cause Kubernetes to restart otherwise-healthy pods.
+
+**`GET /healthz/upstreams`** returns `200` when all upstreams are reachable, `503` if any is not:
+
+```json
+{
+  "status": "ok",
+  "checked_at": "2026-07-03T09:30:00Z",
+  "upstreams": [
+    { "id": "letsencrypt", "directory_url": "https://acme-v02.api.letsencrypt.org/directory",
+      "healthy": true, "latency_ms": 42, "new_order_url": "…", "new_nonce_url": "…" },
+    { "id": "private-ca-rsa", "directory_url": "https://one.nl.digicert.com/…/directory",
+      "healthy": false, "latency_ms": 8001, "error": "fetching directory: …" }
+  ]
+}
+```
+
+> **Note:** `/healthz/upstreams` verifies *reachability*, not *issuance*. A CA can serve its directory and validate authorizations yet still reject issuance at finalize (e.g. a certificate-profile constraint) — that surfaces as a `WARN` on the finalize path and a relayed ACME error to the client, not here.
+
+Example Kubernetes probes for gateway-terminated TLS (`scheme: HTTPS`, port `8443`). Under external TLS termination (`server.tls: false`) the pod serves plain HTTP — use `scheme: HTTP` and port `8080` instead:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /healthz, port: 8443, scheme: HTTPS }
+  initialDelaySeconds: 5
+  periodSeconds: 15
+readinessProbe:
+  httpGet: { path: /healthz, port: 8443, scheme: HTTPS }
+  periodSeconds: 15
+```
 
 ## Test Cases
 
@@ -273,6 +328,7 @@ Always test against LE **staging** (`https://acme-staging-v02.api.letsencrypt.or
 | TC-7 | `certbot renew` | — | Each cert renewed via same upstream as original issuance |
 | TC-8 | First start with `bootstrap.enabled: true`, no cert on disk | — | Bootstrap dns-01 flow runs; HTTPS listener starts |
 | TC-9 | Cert within renewal window | — | Background goroutine renews and reloads cert without restart |
+| TC-10 | CSR key type contradicts `require_csr_key_type` on the matched rule | — | Finalize rejected with `badCSR`; nothing sent upstream; `csr key type rejected by routing rule` in logs |
 
 ## Release
 
@@ -420,6 +476,7 @@ Required environment variables:
 Optional environment variables:
 
 - `ACME_E2E_DNS_CLEANUP_CMD` — hook command to remove TXT after validation
+- `ACME_DNS_CHALLENGE_ZONE` — enables CNAME delegation. Set to the dedicated zone your `_acme-challenge.<domain>` CNAMEs point at (for example `challenges.example.com`). The gateway follows the CNAME to that target and, in strict mode, requires the target to fall under this zone — so it **must** match the zone your CNAMEs / NS delegation actually use, or the challenge is rejected before the deploy hook runs. Unset = delegation off.
 - `ACME_E2E_DNS_TIMEOUT_SECONDS` — propagation timeout (default `300`)
 - `ACME_E2E_DNS_POLL_SECONDS` — DNS poll interval (default `5`)
 - `ACME_E2E_ORDER_TIMEOUT_SECONDS` — order readiness timeout (default `600`)

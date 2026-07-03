@@ -57,6 +57,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Ping verifies the database is reachable. Used by the liveness/readiness probe
+// so Kubernetes can restart a pod whose state store has become unusable.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // PruneExpiredNonces removes nonces that have passed their expiry time.
 func (s *Store) PruneExpiredNonces(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM nonces WHERE expires_at <= ?`, time.Now().UTC())

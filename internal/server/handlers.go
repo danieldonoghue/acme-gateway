@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -142,9 +143,40 @@ type acmeError struct {
 	Type   string `json:"type"`
 	Detail string `json:"detail"`
 	Status int    `json:"-"` // RFC 8555 §7.7: status field deprecated, HTTP status used instead
+	// Subproblems is relayed verbatim from an upstream CA problem document so the
+	// client sees per-identifier detail (RFC 8555 §6.7.1).
+	Subproblems json.RawMessage `json:"subproblems,omitempty"`
 }
 
 func (e *acmeError) Error() string { return e.Detail }
+
+// relayUpstreamError converts an error from an upstream ACME call into a
+// client-facing problem. When the upstream returned an ACME problem document
+// (e.g. a CA rejecting a CSR at finalize), it is relayed faithfully — type,
+// detail, HTTP status, and subproblems — so the client sees a terminal,
+// actionable error and stops polling, instead of the generic 500 it would treat
+// as transient and retry. Transport/other errors fall back to serverInternal.
+func relayUpstreamError(fallbackDetail string, err error) *acmeError {
+	var ae *upstream.ACMEError
+	if errors.As(err, &ae) {
+		status := ae.Status
+		if status < 400 || status > 599 {
+			// The upstream problem lacked a usable HTTP status; treat as a
+			// bad-gateway condition rather than pretending it was our fault.
+			status = http.StatusBadGateway
+		}
+		typ := ae.Type
+		if typ == "" {
+			typ = "urn:ietf:params:acme:error:serverInternal"
+		}
+		detail := ae.Detail
+		if detail == "" {
+			detail = fallbackDetail
+		}
+		return &acmeError{Type: typ, Detail: detail, Status: status, Subproblems: ae.Subproblems}
+	}
+	return errServerInternal(fallbackDetail + ": " + err.Error())
+}
 
 func errBadNonce(detail string) *acmeError {
 	return &acmeError{Type: "urn:ietf:params:acme:error:badNonce", Detail: detail, Status: http.StatusBadRequest}
@@ -160,6 +192,9 @@ func errNotFound(detail string) *acmeError {
 }
 func errServerInternal(detail string) *acmeError {
 	return &acmeError{Type: "urn:ietf:params:acme:error:serverInternal", Detail: detail, Status: http.StatusInternalServerError}
+}
+func errBadCSR(detail string) *acmeError {
+	return &acmeError{Type: "urn:ietf:params:acme:error:badCSR", Detail: detail, Status: http.StatusBadRequest}
 }
 
 // writeError writes an ACME problem document and attaches a fresh Replay-Nonce.
@@ -622,7 +657,10 @@ func (h *Handler) handleOrder(w http.ResponseWriter, r *http.Request) {
 
 	upOrder, err := client.GetOrder(r.Context(), order.UpstreamOrderURL)
 	if err != nil {
-		h.writeError(w, errServerInternal("polling upstream order: "+err.Error()))
+		h.log.Warn("upstream order poll failed",
+			"order_id", order.ID, "upstream_id", order.UpstreamID,
+			"upstream_order_url", order.UpstreamOrderURL, "err", err)
+		h.writeError(w, relayUpstreamError("polling upstream order", err))
 		return
 	}
 
@@ -679,7 +717,10 @@ func (h *Handler) handleAuthz(w http.ResponseWriter, r *http.Request) {
 
 	upAuthz, err := client.GetAuthorization(r.Context(), rm.UpstreamURL)
 	if err != nil {
-		h.writeError(w, errServerInternal("fetching authorization: "+err.Error()))
+		h.log.Warn("upstream authorization fetch failed",
+			"order_id", order.ID, "upstream_id", order.UpstreamID,
+			"upstream_authz_url", rm.UpstreamURL, "err", err)
+		h.writeError(w, relayUpstreamError("fetching authorization", err))
 		return
 	}
 
@@ -974,6 +1015,35 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// Re-derive the routing decision for this order to recover any
+	// require_csr_key_type constraint on the matched rule. Routing inputs are
+	// deterministic (profile, account key type, identifiers), so this matches
+	// the rule selected at new-order time.
+	var orderIdentifiers []model.Identifier
+	if err := json.Unmarshal([]byte(order.Identifiers), &orderIdentifiers); err != nil {
+		h.writeError(w, errServerInternal("decoding order identifiers"))
+		return
+	}
+	decision := h.router.Route(&router.Request{
+		Profile:     order.Profile,
+		KeyType:     acct.KeyType,
+		Identifiers: orderIdentifiers,
+	})
+	if decision.RequireCSRKeyType != "" && !strings.EqualFold(csrKeyType, decision.RequireCSRKeyType) {
+		h.log.Warn("csr key type rejected by routing rule",
+			"account_id", acct.ID,
+			"order_id", order.ID,
+			"profile", order.Profile,
+			"upstream_id", order.UpstreamID,
+			"required_csr_key_type", decision.RequireCSRKeyType,
+			"csr_key_type", csrKeyType,
+		)
+		h.writeError(w, errBadCSR(fmt.Sprintf(
+			"CSR public key must be %s for profile %q, got %s",
+			decision.RequireCSRKeyType, order.Profile, csrKeyTypeLabel(csrKeyType))))
+		return
+	}
+
 	client, err := h.orderClient(r.Context(), order)
 	if err != nil {
 		h.writeError(w, errServerInternal("upstream unavailable"))
@@ -982,7 +1052,18 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 
 	upOrder, err := client.FinalizeOrder(r.Context(), rm.UpstreamURL, csrDER)
 	if err != nil {
-		h.writeError(w, errServerInternal("finalizing upstream order: "+err.Error()))
+		h.log.Warn("upstream finalize failed",
+			"order_id", order.ID, "upstream_id", order.UpstreamID, "profile", order.Profile,
+			"account_key_type", acct.KeyType, "csr_key_type", csrKeyType, "err", err)
+		ferr := relayUpstreamError("finalizing upstream order", err)
+		// A definitive upstream rejection (4xx ACME problem, e.g. the CA refusing
+		// to issue this CSR/order) is terminal: mark our order invalid so the
+		// client sees a final state and stops polling a perpetually-"ready" order
+		// until timeout. Transport/5xx errors are left as-is (may be transient).
+		if ferr.Status >= 400 && ferr.Status < 500 {
+			h.store.UpdateOrderStatus(r.Context(), order.ID, model.OrderStatusInvalid) //nolint:errcheck,gosec
+		}
+		h.writeError(w, ferr)
 		return
 	}
 
@@ -1044,7 +1125,10 @@ func (h *Handler) handleCert(w http.ResponseWriter, r *http.Request) {
 
 	result, err := client.FetchCertificateWithAlternates(r.Context(), rm.UpstreamURL)
 	if err != nil {
-		h.writeError(w, errServerInternal("fetching certificate: "+err.Error()))
+		h.log.Warn("upstream certificate fetch failed",
+			"order_id", order.ID, "upstream_id", order.UpstreamID,
+			"upstream_cert_url", rm.UpstreamURL, "err", err)
+		h.writeError(w, relayUpstreamError("fetching certificate", err))
 		return
 	}
 	chain := result.Chain
@@ -1631,6 +1715,15 @@ func certRequestKeyType(csr *x509.CertificateRequest) string {
 	default:
 		return ""
 	}
+}
+
+// csrKeyTypeLabel returns a human-readable label for a CSR key type,
+// substituting a placeholder when the type could not be determined.
+func csrKeyTypeLabel(t string) string {
+	if t == "" {
+		return "an unrecognised key type"
+	}
+	return t
 }
 
 // jwkMatchesCertKey reports whether jwk contains the same public key as cert.

@@ -282,22 +282,24 @@ Two unauthenticated `GET` endpoints are exposed for monitoring:
 | `GET /healthz` | Liveness/readiness. Pings the local SQLite state store only. | Cheap; **never contacts upstream CAs**. | Kubernetes `livenessProbe` / `readinessProbe` |
 | `GET /healthz/upstreams` | Fetches each configured upstream's ACME directory and reports reachability + latency. | One directory `GET` per upstream (no accounts/orders, so no rate-limit risk). | On-demand diagnostics, alerting |
 
-**`GET /healthz`** returns `200 {"status":"ok"}`, or `503 {"status":"unavailable"}` if the state store is unreachable. It deliberately does **not** probe upstreams — otherwise a CA outage would cause Kubernetes to restart otherwise-healthy pods.
+**`GET /healthz`** returns `200 {"status":"ok"}`, or `503 {"status":"unavailable","reason":"state store unreachable"}` if the state store is unreachable. It deliberately does **not** probe upstreams — otherwise a CA outage would cause Kubernetes to restart otherwise-healthy pods.
 
 **`GET /healthz/upstreams`** returns `200` when all upstreams are reachable, `503` if any is not:
 
 ```json
 {
-  "status": "ok",
+  "status": "degraded",
   "checked_at": "2026-07-03T09:30:00Z",
   "upstreams": [
     { "id": "letsencrypt", "directory_url": "https://acme-v02.api.letsencrypt.org/directory",
       "healthy": true, "latency_ms": 42, "new_order_url": "…", "new_nonce_url": "…" },
-    { "id": "private-ca-rsa", "directory_url": "https://one.nl.digicert.com/…/directory",
+    { "id": "private-ca", "directory_url": "https://acme.private-ca.example/directory",
       "healthy": false, "latency_ms": 8001, "error": "fetching directory: …" }
   ]
 }
 ```
+
+(`status` is `"ok"` with HTTP 200 when every upstream is healthy; `"degraded"` with HTTP 503 when any is not — as shown above.)
 
 > **Note:** `/healthz/upstreams` verifies *reachability*, not *issuance*. A CA can serve its directory and validate authorizations yet still reject issuance at finalize (e.g. a certificate-profile constraint) — that surfaces as a `WARN` on the finalize path and a relayed ACME error to the client, not here.
 

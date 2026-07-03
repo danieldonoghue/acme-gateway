@@ -143,12 +143,12 @@ func main() {
 
 	fmt.Printf("\n✗ Order STUCK at pending across %d polls despite all authorizations being valid.\n"+
 		"  This is an upstream-CA-side order-state-machine problem (RFC 8555 §7.1.6 says it should be 'ready').\n"+
-		"  certbot and the gateway both poll this order for 'ready' and will hang until timeout — exactly your symptom.\n", polls)
+		"  ACME clients and the gateway both poll this order for 'ready' and will hang until timeout — exactly your symptom.\n", polls)
 	os.Exit(1)
 }
 
 // finalize builds a CSR of the requested key type, submits it, polls the order
-// to valid, and downloads the certificate — the exact step certbot performs
+// to valid, and downloads the certificate — the exact step ACME clients perform
 // that neither the logs nor the earlier phases have exercised. A key-type
 // mismatch against the upstream CA's product shows up here (badCSR, or a stuck order).
 func finalize(ctx context.Context, client *upstream.Client, finalizeURL, orderURL string, ids []upstream.Identifier, csrKey string) {

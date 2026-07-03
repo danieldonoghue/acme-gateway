@@ -997,14 +997,19 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 
 	csrKeyType, err := csrKeyTypeFromDER(csrDER)
 	if err != nil {
-		h.log.Warn("unable to parse csr key type",
+		// The CSR could not be parsed at all — fail fast with badCSR rather than
+		// forwarding an unparseable CSR upstream (RFC 8555 §7.4).
+		h.log.Warn("rejecting unparseable csr",
 			"account_id", acct.ID,
 			"order_id", order.ID,
 			"profile", order.Profile,
 			"upstream_id", order.UpstreamID,
 			"err", err,
 		)
-	} else if acct.KeyType != "" && csrKeyType != "" && acct.KeyType != csrKeyType {
+		h.writeError(w, errBadCSR("could not parse CSR"))
+		return
+	}
+	if acct.KeyType != "" && csrKeyType != "" && acct.KeyType != csrKeyType {
 		h.log.Warn("csr/account key type mismatch",
 			"account_id", acct.ID,
 			"order_id", order.ID,

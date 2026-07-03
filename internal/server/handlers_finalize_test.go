@@ -228,6 +228,28 @@ func TestHandleFinalize_RejectsWrongCSRKeyType(t *testing.T) {
 	}
 }
 
+func TestHandleFinalize_RejectsUnparseableCSR(t *testing.T) {
+	env := newFinalizeTestEnv(t)
+
+	rr := env.postFinalize(t, []byte("not a valid der csr")) // undecodable CSR
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 body=%s", rr.Code, rr.Body.String())
+	}
+	var prob struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &prob); err != nil {
+		t.Fatalf("decoding problem document: %v", err)
+	}
+	if prob.Type != "urn:ietf:params:acme:error:badCSR" {
+		t.Errorf("problem type = %q, want badCSR", prob.Type)
+	}
+	if got := env.finalizeHits.Load(); got != 0 {
+		t.Errorf("upstream finalize hit %d times, want 0 (rejected before proxying)", got)
+	}
+}
+
 func TestHandleFinalize_AcceptsMatchingCSRKeyType(t *testing.T) {
 	env := newFinalizeTestEnv(t)
 

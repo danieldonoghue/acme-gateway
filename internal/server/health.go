@@ -35,6 +35,11 @@ const upstreamHealthTimeout = 8 * time.Second
 // livenessTimeout bounds the state-store ping in the k8s health probe.
 const livenessTimeout = 2 * time.Second
 
+// probeErrGeneric is the client-facing error for a failed upstream probe. The
+// endpoint is unauthenticated, so the specific error (which may carry internal
+// paths/hosts) is logged server-side and only this generic string is returned.
+const probeErrGeneric = "probe failed (see gateway logs)"
+
 // handleLiveness is a cheap health check for Kubernetes liveness/readiness
 // probes. It verifies the process is serving and the local state store is
 // reachable — deliberately WITHOUT touching upstream CAs, so a CA outage or
@@ -130,7 +135,11 @@ func (h *Handler) probeUpstream(ctx context.Context, id string, up config.Upstre
 
 	client, err := h.newProbeClient(up)
 	if err != nil {
-		res.Error = err.Error()
+		// Keep the client-facing error generic: this endpoint is unauthenticated
+		// and the underlying error can carry internal detail (e.g. CA-cert file
+		// paths). The full error is logged server-side for operators.
+		h.log.Warn("upstream health probe: client init failed", "upstream_id", id, "directory_url", up.DirectoryURL, "err", err)
+		res.Error = probeErrGeneric
 		return res
 	}
 
@@ -141,8 +150,8 @@ func (h *Handler) probeUpstream(ctx context.Context, id string, up config.Upstre
 	dir, err := client.Directory(ctx)
 	res.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {
-		res.Error = err.Error()
 		h.log.Warn("upstream health probe failed", "upstream_id", id, "directory_url", up.DirectoryURL, "err", err)
+		res.Error = probeErrGeneric
 		return res
 	}
 

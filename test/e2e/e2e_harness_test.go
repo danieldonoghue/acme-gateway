@@ -331,14 +331,17 @@ func newStagingHarness(t *testing.T) *harness {
 		settleSeconds = n
 	}
 
-	// Optional CNAME delegation. When EXCEDO_DNS_ZONE is set, the dns hook
-	// publishes challenge TXTs into that dedicated zone, so the gateway must
-	// follow the _acme-challenge.<domain> CNAME to the delegated target. The
-	// excedo hook reads EXCEDO_DNS_ZONE itself from the inherited environment;
-	// here we just enable the gateway-side delegation resolution. Unset = off
-	// (records published at _acme-challenge.<domain> in the source zone).
+	// Optional CNAME delegation. Set ACME_DNS_CHALLENGE_ZONE to the dedicated
+	// zone that _acme-challenge.<domain> CNAMEs point at (e.g.
+	// "challenges.example.com"): the gateway follows the CNAME to that delegated
+	// target and, in strict mode, requires the target to fall under this zone.
+	// It MUST match the zone your CNAMEs / NS delegation actually use, or strict
+	// delegation rejects the challenge before the deploy hook runs. The deploy
+	// hook derives its own zone from the FQDN it is handed, so it does not read
+	// this var. Unset = delegation off (records published at
+	// _acme-challenge.<domain> in the source zone).
 	var delegation config.DNSDelegationPolicy
-	if zone := strings.Trim(strings.TrimSpace(os.Getenv("EXCEDO_DNS_ZONE")), "."); zone != "" {
+	if zone := strings.Trim(strings.TrimSpace(os.Getenv("ACME_DNS_CHALLENGE_ZONE")), "."); zone != "" {
 		enabled := true
 		delegation = config.DNSDelegationPolicy{
 			Enabled:             &enabled,

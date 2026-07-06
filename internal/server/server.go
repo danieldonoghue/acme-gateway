@@ -142,6 +142,12 @@ func (s *Server) buildRouter() http.Handler {
 	// Directory
 	r.Get("/directory", h.handleDirectory)
 
+	// Health: cheap liveness/readiness probe for Kubernetes (local state only,
+	// never touches upstreams). Deeper on-demand upstream reachability lives at
+	// /healthz/upstreams (no accounts/orders; rate-limit-safe).
+	r.Get("/healthz", h.handleLiveness)
+	r.Get("/healthz/upstreams", h.handleUpstreamsHealth)
+
 	// Nonce
 	r.Head("/new-nonce", h.handleNewNonce)
 	r.Get("/new-nonce", h.handleNewNonce)

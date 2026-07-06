@@ -40,11 +40,13 @@ spec:
             capabilities:
               drop:
                 - ALL
-          # /directory returns 200 OK with the ACME directory JSON when the
-          # service is healthy (no dedicated health endpoint exists).
+          # /healthz is a cheap liveness/readiness check: it pings the local
+          # SQLite state store and returns 200, WITHOUT contacting upstream CAs
+          # (so a CA outage never restarts otherwise-healthy pods). For an
+          # on-demand view of upstream reachability, GET /healthz/upstreams.
           livenessProbe:
             httpGet:
-              path: /directory
+              path: /healthz
               port: https
               scheme: HTTPS
             initialDelaySeconds: 10
@@ -53,7 +55,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /directory
+              path: /healthz
               port: https
               scheme: HTTPS
             initialDelaySeconds: 5

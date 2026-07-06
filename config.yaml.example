@@ -162,16 +162,22 @@ routing:
     #   upstream_profile: "$passthrough"
 
     # Strip (default): private CA routing is via EAB credentials, no upstream profile needed.
+    # require_csr_key_type (optional, RSA or ECDSA): reject a finalize whose CSR
+    # public key does not match, with an ACME badCSR error, before contacting the
+    # upstream. Note this checks the certificate key in the CSR, not the ACME
+    # account key — certbot sets the certificate key per lineage via --key-type.
     - match:
         profile: "tlsclient"
         key_type: "RSA"
       upstream: private-ca-rsa
+      require_csr_key_type: "RSA"
       # upstream_profile omitted → strip (no profile field sent upstream)
 
     - match:
         profile: "tlsclient"
         key_type: "ECDSA"
       upstream: private-ca-ecdsa
+      require_csr_key_type: "ECDSA"
 
     # Domain-suffix fallbacks (for clients not using --preferred-profile).
     - match:

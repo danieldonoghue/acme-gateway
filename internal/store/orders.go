@@ -13,10 +13,10 @@ import (
 func (s *Store) SaveOrder(ctx context.Context, o *model.Order) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO orders
-		 (id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, require_csr_key_type, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		o.ID, o.AccountID, o.UpstreamID, o.UpstreamSlot, o.UpstreamOrderURL,
-		o.Status, o.Identifiers, o.Profile,
+		o.Status, o.Identifiers, o.Profile, o.RequireCSRKeyType,
 		o.CreatedAt.UTC().Format(time.RFC3339),
 		o.UpdatedAt.UTC().Format(time.RFC3339),
 	)
@@ -26,7 +26,7 @@ func (s *Store) SaveOrder(ctx context.Context, o *model.Order) error {
 // GetOrder retrieves an order by its gateway ID. Returns nil, nil if not found.
 func (s *Store) GetOrder(ctx context.Context, id string) (*model.Order, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, created_at, updated_at
+		`SELECT id, account_id, upstream_id, upstream_slot, upstream_order_url, status, identifiers, profile, require_csr_key_type, created_at, updated_at
 		 FROM orders WHERE id = ?`, id,
 	)
 	return scanOrder(row)
@@ -56,7 +56,7 @@ func scanOrder(row *sql.Row) (*model.Order, error) {
 	var createdAt, updatedAt string
 	if err := row.Scan(
 		&o.ID, &o.AccountID, &o.UpstreamID, &o.UpstreamSlot, &o.UpstreamOrderURL,
-		&o.Status, &o.Identifiers, &o.Profile, &createdAt, &updatedAt,
+		&o.Status, &o.Identifiers, &o.Profile, &o.RequireCSRKeyType, &createdAt, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil

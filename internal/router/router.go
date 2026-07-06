@@ -19,6 +19,11 @@ type Decision struct {
 	//   "$passthrough" → forward the inbound profile verbatim
 	//   any other string → override with this exact value
 	UpstreamProfile string
+
+	// RequireCSRKeyType, when non-empty ("RSA" or "ECDSA"), means the CSR
+	// submitted at finalize must use a key of this type; a mismatch is
+	// rejected with an ACME badCSR error before contacting the upstream.
+	RequireCSRKeyType string
 }
 
 // Request contains the information available at routing time.
@@ -51,8 +56,9 @@ func (r *Router) Route(req *Request) Decision {
 	for _, rule := range r.cfg.Rules {
 		if matches(rule.Match, req) {
 			return Decision{
-				UpstreamID:      rule.Upstream,
-				UpstreamProfile: rule.UpstreamProfile,
+				UpstreamID:        rule.Upstream,
+				UpstreamProfile:   rule.UpstreamProfile,
+				RequireCSRKeyType: rule.RequireCSRKeyType,
 			}
 		}
 	}

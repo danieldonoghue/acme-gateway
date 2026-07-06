@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,15 +95,40 @@ type Identifier struct {
 	Value string `json:"value"`
 }
 
-// ACMEError represents an ACME problem document.
+// ACMEError represents an ACME problem document (RFC 8555 §6.7).
 type ACMEError struct {
 	Type   string `json:"type"`
 	Detail string `json:"detail"`
 	Status int    `json:"status"`
+	// Subproblems carries the raw "subproblems" array (RFC 8555 §6.7.1) when the
+	// CA returns per-identifier detail (e.g. which SAN was rejected at finalize).
+	// Kept as raw JSON so it can be relayed to the downstream client verbatim.
+	Subproblems json.RawMessage `json:"subproblems,omitempty"`
 }
 
 func (e *ACMEError) Error() string {
+	if len(e.Subproblems) > 0 {
+		return fmt.Sprintf("ACME error %s: %s (subproblems: %s)", e.Type, e.Detail, summarizeSubproblems(e.Subproblems))
+	}
 	return fmt.Sprintf("ACME error %s: %s", e.Type, e.Detail)
+}
+
+// maxSubproblemLogRunes bounds how much of the subproblems JSON is embedded in
+// the Error() string, keeping log lines small and single-line. The full raw
+// JSON is still available via the Subproblems field for relaying to the client.
+const maxSubproblemLogRunes = 512
+
+// summarizeSubproblems renders subproblems JSON for a log/error string: newlines
+// and carriage returns are collapsed to spaces (defends against multi-line
+// log injection from upstream-controlled content) and the result is truncated
+// to a bounded length.
+func summarizeSubproblems(raw json.RawMessage) string {
+	s := strings.ReplaceAll(string(raw), "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	if r := []rune(s); len(r) > maxSubproblemLogRunes {
+		return string(r[:maxSubproblemLogRunes]) + "…(truncated)"
+	}
+	return s
 }
 
 // New creates a Client using the provided private key.

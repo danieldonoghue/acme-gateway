@@ -308,14 +308,17 @@ resources:
   limits:
     memory: 256Mi
 
-# -- Liveness probe — uses the ACME /directory endpoint (no auth required).
+# -- Liveness probe — uses /healthz, a cheap check that pings the local state
+# store and returns 200 WITHOUT contacting upstream CAs (so a CA outage never
+# restarts otherwise-healthy pods). GET /healthz/upstreams gives an on-demand
+# view of upstream reachability but is NOT suitable as a probe.
 # When config.server.tls is false, the deployment template automatically
 # sets scheme: HTTP and port: http regardless of what is set here.
 # NOTE: probe overrides must keep httpGet as the probe type; switching to
 # tcpSocket or exec will conflict with the automatic httpGet injection.
 livenessProbe:
   httpGet:
-    path: /directory
+    path: /healthz
     port: https
     scheme: HTTPS
   initialDelaySeconds: 10
@@ -327,7 +330,7 @@ livenessProbe:
 # When config.server.tls is false, scheme and port are overridden automatically.
 readinessProbe:
   httpGet:
-    path: /directory
+    path: /healthz
     port: https
     scheme: HTTPS
   initialDelaySeconds: 5
@@ -342,7 +345,7 @@ readinessProbe:
 # When config.server.tls is false, scheme and port are overridden automatically.
 startupProbe:
   httpGet:
-    path: /directory
+    path: /healthz
     port: https
     scheme: HTTPS
   failureThreshold: 30

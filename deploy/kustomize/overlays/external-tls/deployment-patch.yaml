@@ -20,12 +20,12 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /directory
+              path: /healthz
               port: http
               scheme: HTTP
           readinessProbe:
             httpGet:
-              path: /directory
+              path: /healthz
               port: http
               scheme: HTTP
           volumeMounts:

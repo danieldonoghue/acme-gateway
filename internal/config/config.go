@@ -214,10 +214,15 @@ type RoutingConfig struct {
 //   - ""             → strip (omit the profile field upstream) — DEFAULT
 //   - "$passthrough" → forward exactly what the client sent
 //   - any other string → always send this exact string upstream
+//
+// RequireCSRKeyType, when set to "RSA" or "ECDSA", rejects finalize requests
+// whose CSR public key is not of that type with an ACME badCSR error, before
+// the CSR is forwarded to the upstream CA. Empty = no enforcement (default).
 type RoutingRule struct {
-	Match           MatchConfig `yaml:"match"`
-	Upstream        string      `yaml:"upstream"`
-	UpstreamProfile string      `yaml:"upstream_profile,omitempty"`
+	Match             MatchConfig `yaml:"match"`
+	Upstream          string      `yaml:"upstream"`
+	UpstreamProfile   string      `yaml:"upstream_profile,omitempty"`
+	RequireCSRKeyType string      `yaml:"require_csr_key_type,omitempty"`
 }
 
 // MatchConfig holds the conditions for a routing rule. All non-empty fields are ANDed.
@@ -318,6 +323,12 @@ func validate(cfg *Config) error {
 		if kt != "" && kt != "RSA" && kt != "ECDSA" {
 			return fmt.Errorf("routing.rules[%d]: key_type must be RSA or ECDSA, got %q", i, rule.Match.KeyType)
 		}
+		// Validate require_csr_key_type values and normalise to upper case.
+		rct := strings.ToUpper(rule.RequireCSRKeyType)
+		if rct != "" && rct != "RSA" && rct != "ECDSA" {
+			return fmt.Errorf("routing.rules[%d]: require_csr_key_type must be RSA or ECDSA, got %q", i, rule.RequireCSRKeyType)
+		}
+		cfg.Routing.Rules[i].RequireCSRKeyType = rct
 	}
 
 	// Validate default upstream.

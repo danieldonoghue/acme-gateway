@@ -25,16 +25,20 @@ type UpstreamAccount struct {
 
 // Order represents an ACME order tracked by the gateway.
 type Order struct {
-	ID               string    `json:"id"`
-	AccountID        string    `json:"accountId"`
-	UpstreamID       string    `json:"upstreamId"`
-	UpstreamSlot     int       `json:"upstreamSlot"` // which account slot within UpstreamID was used
-	UpstreamOrderURL string    `json:"upstreamOrderUrl"`
-	Status           string    `json:"status"`            // pending/ready/processing/valid/invalid
-	Identifiers      string    `json:"identifiers"`       // JSON array
-	Profile          string    `json:"profile,omitempty"` // gateway profile name from newOrder
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	ID               string `json:"id"`
+	AccountID        string `json:"accountId"`
+	UpstreamID       string `json:"upstreamId"`
+	UpstreamSlot     int    `json:"upstreamSlot"` // which account slot within UpstreamID was used
+	UpstreamOrderURL string `json:"upstreamOrderUrl"`
+	Status           string `json:"status"`            // pending/ready/processing/valid/invalid
+	Identifiers      string `json:"identifiers"`       // JSON array
+	Profile          string `json:"profile,omitempty"` // gateway profile name from newOrder
+	// RequireCSRKeyType is the matched routing rule's require_csr_key_type
+	// captured at new-order time ("RSA"/"ECDSA"/""), so finalize enforcement is
+	// stable per-order even if routing rules change afterwards.
+	RequireCSRKeyType string    `json:"requireCsrKeyType,omitempty"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 // ResourceMap maps a gateway-local UUID to an upstream URL.

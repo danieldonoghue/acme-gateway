@@ -194,6 +194,58 @@ routing:
 	}
 }
 
+func TestLoad_InvalidRequireCSRKeyType(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+upstreams:
+  le:
+    directory_url: "https://example.com"
+routing:
+  rules:
+    - match:
+        domain_suffix: ".example.com"
+      upstream: le
+      require_csr_key_type: "Ed25519"
+`
+	path := writeTemp(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid require_csr_key_type")
+	}
+}
+
+func TestLoad_RequireCSRKeyTypeNormalised(t *testing.T) {
+	cfg := `
+server:
+  base_url: "https://acme-gateway.internal"
+state:
+  db_path: "/tmp/test.db"
+bootstrap:
+  cert_path: "/etc/acme-gateway/tls.crt"
+  key_path:  "/etc/acme-gateway/tls.key"
+upstreams:
+  le:
+    directory_url: "https://example.com"
+routing:
+  rules:
+    - match:
+        domain_suffix: ".example.com"
+      upstream: le
+      require_csr_key_type: "ecdsa"
+`
+	path := writeTemp(t, cfg)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := c.Routing.Rules[0].RequireCSRKeyType; got != "ECDSA" {
+		t.Errorf("RequireCSRKeyType = %q, want %q", got, "ECDSA")
+	}
+}
+
 func TestInterpolateEnv(t *testing.T) {
 	t.Setenv("TEST_SECRET", "my-secret-value")
 

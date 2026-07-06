@@ -571,16 +571,17 @@ func (h *Handler) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	order := &model.Order{
-		ID:               orderID,
-		AccountID:        acct.ID,
-		UpstreamID:       decision.UpstreamID,
-		UpstreamSlot:     -1,
-		UpstreamOrderURL: upOrderURL,
-		Status:           upOrder.Status,
-		Identifiers:      string(idJSON),
-		Profile:          req.Profile,
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
+		ID:                orderID,
+		AccountID:         acct.ID,
+		UpstreamID:        decision.UpstreamID,
+		UpstreamSlot:      -1,
+		UpstreamOrderURL:  upOrderURL,
+		Status:            upOrder.Status,
+		Identifiers:       string(idJSON),
+		Profile:           req.Profile,
+		RequireCSRKeyType: decision.RequireCSRKeyType,
+		CreatedAt:         time.Now().UTC(),
+		UpdatedAt:         time.Now().UTC(),
 	}
 	if err := h.store.SaveOrder(r.Context(), order); err != nil {
 		h.writeError(w, errServerInternal("saving order"))
@@ -1036,36 +1037,23 @@ func (h *Handler) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// Re-derive the routing decision for this order to recover any
-	// require_csr_key_type constraint on the matched rule. Routing inputs are
-	// deterministic (profile, account key type, identifiers), so this matches
-	// the rule selected at new-order time.
-	var orderIdentifiers []model.Identifier
-	if err := json.Unmarshal([]byte(order.Identifiers), &orderIdentifiers); err != nil {
-		// Stored identifiers should always be valid JSON we wrote at new-order;
-		// a decode failure implies state/DB corruption, so log for diagnosis.
-		h.log.Error("decoding stored order identifiers",
-			"order_id", order.ID, "upstream_id", order.UpstreamID, "err", err)
-		h.writeError(w, errServerInternal("decoding order identifiers: "+err.Error()))
-		return
-	}
-	decision := h.router.Route(&router.Request{
-		Profile:     order.Profile,
-		KeyType:     acct.KeyType,
-		Identifiers: orderIdentifiers,
-	})
-	if decision.RequireCSRKeyType != "" && !strings.EqualFold(csrKeyType, decision.RequireCSRKeyType) {
+	// Enforce any require_csr_key_type constraint using the value captured on
+	// the order at new-order time. Using the persisted value (rather than
+	// re-routing here) keeps an order's finalize behavior stable even if the
+	// routing rules change between order creation and finalize (e.g. a config
+	// rollout).
+	if order.RequireCSRKeyType != "" && !strings.EqualFold(csrKeyType, order.RequireCSRKeyType) {
 		h.log.Warn("csr key type rejected by routing rule",
 			"account_id", acct.ID,
 			"order_id", order.ID,
 			"profile", order.Profile,
 			"upstream_id", order.UpstreamID,
-			"required_csr_key_type", decision.RequireCSRKeyType,
+			"required_csr_key_type", order.RequireCSRKeyType,
 			"csr_key_type", csrKeyType,
 		)
 		h.writeError(w, errBadCSR(fmt.Sprintf(
 			"CSR public key must be %s for profile %q, got %s",
-			decision.RequireCSRKeyType, order.Profile, csrKeyTypeLabel(csrKeyType))))
+			order.RequireCSRKeyType, order.Profile, csrKeyTypeLabel(csrKeyType))))
 		return
 	}
 

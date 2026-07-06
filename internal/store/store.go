@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS orders (
   status             TEXT    NOT NULL,
   identifiers        TEXT    NOT NULL,
   profile            TEXT    NOT NULL DEFAULT '',
+  require_csr_key_type TEXT  NOT NULL DEFAULT '',
   created_at         TEXT    NOT NULL,
   updated_at         TEXT    NOT NULL,
   FOREIGN KEY (account_id) REFERENCES accounts(id)
@@ -143,8 +144,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	// Idempotent column additions for databases predating this schema version.
-	s.db.ExecContext(context.Background(), `ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`)              //nolint:errcheck,gosec
-	s.db.ExecContext(context.Background(), `ALTER TABLE orders ADD COLUMN upstream_slot INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck,gosec
+	s.db.ExecContext(context.Background(), `ALTER TABLE resource_map ADD COLUMN cert_fingerprint TEXT`)                   //nolint:errcheck,gosec
+	s.db.ExecContext(context.Background(), `ALTER TABLE orders ADD COLUMN upstream_slot INTEGER NOT NULL DEFAULT 0`)      //nolint:errcheck,gosec
+	s.db.ExecContext(context.Background(), `ALTER TABLE orders ADD COLUMN require_csr_key_type TEXT NOT NULL DEFAULT ''`) //nolint:errcheck,gosec
 	// Replace the legacy global-unique index on resource_map(upstream_url) with the
 	// order-scoped composite index. The old index would otherwise keep enforcing
 	// global uniqueness and reject a second order that reuses an upstream

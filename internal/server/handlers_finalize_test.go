@@ -147,16 +147,17 @@ func newFinalizeTestEnv(t *testing.T) *finalizeTestEnv {
 	}
 
 	if err := st.SaveOrder(ctx, &model.Order{
-		ID:               "order-1",
-		AccountID:        "acct-1",
-		UpstreamID:       "private-ca-rsa",
-		UpstreamSlot:     0,
-		UpstreamOrderURL: srv.URL + "/acme/order/1",
-		Status:           model.OrderStatusReady,
-		Identifiers:      `[{"type":"dns","value":"host.example.com"}]`,
-		Profile:          "tlsclient-rsa",
-		CreatedAt:        time.Now().UTC(),
-		UpdatedAt:        time.Now().UTC(),
+		ID:                "order-1",
+		AccountID:         "acct-1",
+		UpstreamID:        "private-ca-rsa",
+		UpstreamSlot:      0,
+		UpstreamOrderURL:  srv.URL + "/acme/order/1",
+		Status:            model.OrderStatusReady,
+		Identifiers:       `[{"type":"dns","value":"host.example.com"}]`,
+		Profile:           "tlsclient-rsa",
+		RequireCSRKeyType: "RSA", // captured at new-order time from the matched rule
+		CreatedAt:         time.Now().UTC(),
+		UpdatedAt:         time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("SaveOrder: %v", err)
 	}
@@ -236,6 +237,30 @@ func TestHandleFinalize_RejectsWrongCSRKeyType(t *testing.T) {
 	}
 	if !strings.Contains(prob.Detail, "RSA") {
 		t.Errorf("detail %q should mention required key type", prob.Detail)
+	}
+	if got := env.finalizeHits.Load(); got != 0 {
+		t.Errorf("upstream finalize hit %d times, want 0 (rejected before proxying)", got)
+	}
+}
+
+func TestHandleFinalize_UsesStoredKeyTypeNotCurrentRouting(t *testing.T) {
+	env := newFinalizeTestEnv(t)
+	// Simulate a config rollout that RELAXES the constraint after the order was
+	// created. Finalize must still enforce the value persisted on the order, not
+	// re-derive from the now-changed routing rules.
+	env.handler.router = router.New(&config.RoutingConfig{
+		Rules: []config.RoutingRule{{
+			Match:    config.MatchConfig{Profile: "tlsclient-rsa"},
+			Upstream: "private-ca-rsa",
+			// RequireCSRKeyType intentionally omitted (relaxed post-order).
+		}},
+		DefaultUpstream: "private-ca-rsa",
+	})
+
+	rr := env.postFinalize(t, testCSR(t, newTestKey(t))) // ECDSA CSR vs stored RSA
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (stored RSA constraint must still apply) body=%s", rr.Code, rr.Body.String())
 	}
 	if got := env.finalizeHits.Load(); got != 0 {
 		t.Errorf("upstream finalize hit %d times, want 0 (rejected before proxying)", got)

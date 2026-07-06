@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"net/http"
 	"sort"
 	"sync"
@@ -10,6 +13,19 @@ import (
 	"github.com/danieldonoghue/acme-gateway/internal/config"
 	"github.com/danieldonoghue/acme-gateway/internal/upstream"
 )
+
+// probeKey is a single process-wide ECDSA key reused by all upstream health
+// probes. Probes only issue unsigned directory GETs, so the key is never used
+// to sign anything; sharing it avoids a fresh P-256 keygen per request (and per
+// upstream) when /healthz/upstreams is polled. Returns nil only if keygen fails,
+// in which case the caller falls back to per-call generation.
+var probeKey = sync.OnceValue(func() *ecdsa.PrivateKey {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil
+	}
+	return k
+})
 
 // upstreamHealthTimeout bounds a single upstream directory probe. It is well
 // under the server WriteTimeout so a slow/stalled upstream cannot hold the
@@ -144,7 +160,7 @@ func (h *Handler) newProbeClient(up config.UpstreamConfig) (*upstream.Client, er
 		if err != nil {
 			return nil, err
 		}
-		return upstream.NewWithHTTPClient(up.DirectoryURL, nil, httpClient)
+		return upstream.NewWithHTTPClient(up.DirectoryURL, probeKey(), httpClient)
 	}
-	return upstream.New(up.DirectoryURL, nil)
+	return upstream.New(up.DirectoryURL, probeKey())
 }

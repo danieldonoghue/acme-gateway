@@ -42,7 +42,7 @@ The gateway **terminates and re-originates** every ACME request. It maintains it
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.26+
 - A publicly resolvable domain for the gateway itself (if `bootstrap.enabled: true`)
 - DNS hook scripts for dns-01 challenge provisioning
 

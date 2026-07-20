@@ -32,7 +32,7 @@ jobs:
           [[ "${STAGING_TAG}" == "${VERSION}" ]] || { echo "::error::deploy/kustomize/overlays/staging/kustomization.yaml newTag is '${STAGING_TAG}', expected '${VERSION}'"; fail=1; }
           exit $fail
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -57,7 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true

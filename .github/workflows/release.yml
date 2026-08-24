@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up yq
-        uses: mikefarah/yq@v4.53.3
+        uses: mikefarah/yq@v4.53.6
 
       - name: Validate deployment manifest versions
         run: |

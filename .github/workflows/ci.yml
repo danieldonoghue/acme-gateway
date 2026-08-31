@@ -123,7 +123,7 @@ jobs:
 
       # OWASP-style static security analysis; results posted to GitHub Security.
       - name: gosec
-        uses: securego/gosec@v2.27.1
+        uses: securego/gosec@v2.29.0
         with:
           args: >-
             -fmt sarif
